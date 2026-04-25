@@ -1,4 +1,4 @@
-# Network tools — scanning, tunneling, packet crafting
+# Network tools — scanning, tunneling, packet crafting, MITM
 nmap
 netcat-openbsd
 socat
@@ -8,3 +8,5 @@ ethtool
 python3-scapy
 python3-serial
 jq
+dsniff
+gobuster

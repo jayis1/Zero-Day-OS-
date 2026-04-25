@@ -1,4 +1,5 @@
 #!/bin/bash -e
+set -euo pipefail
 # stage3/05-terminal-st/01-run.sh — Configure st terminal and fbterm fallback
 
 # Configure st terminal (if compiled from source) or use stterm

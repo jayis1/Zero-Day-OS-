@@ -1,4 +1,5 @@
 #!/bin/bash -e
+set -euo pipefail
 # stage3/00-configure-base/01-run.sh — ZERO-DAY OS base system configuration
 
 # Set hostname

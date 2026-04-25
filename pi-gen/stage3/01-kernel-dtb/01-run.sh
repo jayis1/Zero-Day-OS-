@@ -1,4 +1,5 @@
 #!/bin/bash -e
+set -euo pipefail
 # stage3/01-kernel-dtb/01-run.sh — Custom kernel + device tree overlays
 # Compiles DTS overlays and installs kernel config
 

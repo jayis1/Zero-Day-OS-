@@ -1,0 +1,230 @@
+#!/bin/bash
+set -euo pipefail
+# /usr/local/bin/tunnel-mgr
+# SSH tunnel manager — persist, auto-reconnect, manage multiple tunnels
+# Usage: tunnel-mgr <command> [options]
+# Commands: socks, forward, reverse, list, kill, killall
+
+CONF_DIR="/opt/cardputer/config/tunnels"
+PID_DIR="/opt/cardputer/config/tunnels/pids"
+mkdir -p "$CONF_DIR" "$PID_DIR"
+
+# Validate hostname (alphanumeric, dots, hyphens)
+validate_host() {
+    if ! echo "$1" | grep -qE '^[a-zA-Z0-9._-]+$'; then
+        echo "[!] Invalid hostname: $1"
+        exit 1
+    fi
+}
+
+# Validate port number
+validate_port() {
+    if ! echo "$1" | grep -qE '^[0-9]{1,5}$' || [ "$1" -lt 1 ] || [ "$1" -gt 65535 ]; then
+        echo "[!] Invalid port: $1 (1-65535)"
+        exit 1
+    fi
+}
+
+case "${1:-help}" in
+    socks|--socks|-s)
+        # SOCKS5 proxy via SSH dynamic port forwarding
+        HOST="${2:-}"
+        PORT="${3:-1080}"
+        USER="${4:-root}"
+        AUTO_RECONNECT="${5:-yes}"
+
+        if [ -z "$HOST" ]; then
+            echo "Usage: tunnel-mgr socks <host> [local_port] [user] [auto_reconnect]"
+            echo ""
+            echo "Example: tunnel-mgr socks 10.0.0.1 1080 root yes"
+            exit 1
+        fi
+        validate_host "$HOST"
+        validate_port "$PORT"
+
+        # Check if tunnel already exists for this host
+        TUNNEL_ID="socks_${HOST}_${PORT}"
+        PID_FILE="$PID_DIR/${TUNNEL_ID}.pid"
+        if [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
+            echo "[!] SOCKS tunnel to $HOST:$PORT already running (PID: $(cat "$PID_FILE"))"
+            exit 0
+        fi
+
+        echo "[*] Starting SOCKS5 proxy..."
+        echo "[*] Host: $USER@$HOST"
+        echo "[*] Local SOCKS port: $PORT"
+
+        if [ "$AUTO_RECONNECT" = "yes" ]; then
+            # Auto-reconnect loop
+            (
+                while true; do
+                    ssh -D "$PORT" -N -o ServerAliveInterval=60 -o ServerAliveCount=3 \
+                        -o ExitOnForwardFailure=yes -o StrictHostKeyChecking=no \
+                        "$USER@$HOST" 2>/dev/null
+                    echo "[*] SOCKS tunnel to $HOST disconnected, reconnecting in 5s..." >&2
+                    sleep 5
+                done
+            ) &
+            SSH_PID=$!
+        else
+            ssh -D "$PORT" -N -f -o ServerAliveInterval=60 -o ExitOnForwardFailure=yes \
+                -o StrictHostKeyChecking=no "$USER@$HOST"
+            SSH_PID=$!
+        fi
+
+        echo "$SSH_PID" > "$PID_FILE"
+        echo "[+] SOCKS5 proxy active on 127.0.0.1:$PORT"
+        echo "[+] PID: $SSH_PID"
+        echo "[+] Use: proxychains nmap -sT -Pn <target>"
+        echo "[+] Or:  curl --socks5 127.0.0.1:$PORT http://target"
+        echo "[+] Stop: tunnel-mgr kill $TUNNEL_ID"
+        ;;
+
+    forward|--forward|-f)
+        # Local port forwarding: local_port -> remote:host:port
+        LOCAL_PORT="${2:-}"
+        REMOTE="${3:-}"
+        HOST="${4:-}"
+
+        if [ -z "$LOCAL_PORT" ] || [ -z "$REMOTE" ] || [ -z "$HOST" ]; then
+            echo "Usage: tunnel-mgr forward <local_port> <remote_host:remote_port> <ssh_host>"
+            echo ""
+            echo "Example: tunnel-mgr forward 8080 192.168.1.100:80 10.0.0.1"
+            exit 1
+        fi
+        validate_port "$LOCAL_PORT"
+        validate_host "$HOST"
+
+        TUNNEL_ID="fwd_${LOCAL_PORT}_${HOST}"
+        PID_FILE="$PID_DIR/${TUNNEL_ID}.pid"
+
+        if [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
+            echo "[!] Forward tunnel on port $LOCAL_PORT already running"
+            exit 0
+        fi
+
+        echo "[*] Starting local forward: localhost:$LOCAL_PORT -> $REMOTE via $HOST"
+        ssh -L "${LOCAL_PORT}:${REMOTE}" -N -f -o ServerAliveInterval=60 \
+            -o ExitOnForwardFailure=yes -o StrictHostKeyChecking=no "$HOST"
+        SSH_PID=$!
+        echo "$SSH_PID" > "$PID_FILE"
+        echo "[+] Forward tunnel active: localhost:$LOCAL_PORT -> $REMOTE"
+        echo "[+] PID: $SSH_PID"
+        ;;
+
+    reverse|--reverse|-r)
+        # Remote port forwarding: remote_port -> local:local_port
+        REMOTE_PORT="${2:-}"
+        LOCAL_PORT="${3:-}"
+        HOST="${4:-}"
+
+        if [ -z "$REMOTE_PORT" ] || [ -z "$LOCAL_PORT" ] || [ -z "$HOST" ]; then
+            echo "Usage: tunnel-mgr reverse <remote_port> <local_port> <ssh_host>"
+            echo ""
+            echo "Example: tunnel-mgr reverse 4444 4444 10.0.0.1"
+            exit 1
+        fi
+        validate_port "$REMOTE_PORT"
+        validate_port "$LOCAL_PORT"
+        validate_host "$HOST"
+
+        TUNNEL_ID="rev_${REMOTE_PORT}_${HOST}"
+        PID_FILE="$PID_DIR/${TUNNEL_ID}.pid"
+
+        if [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
+            echo "[!] Reverse tunnel on port $REMOTE_PORT already running"
+            exit 0
+        fi
+
+        echo "[*] Starting reverse forward: $HOST:$REMOTE_PORT -> localhost:$LOCAL_PORT"
+        ssh -R "${REMOTE_PORT}:localhost:${LOCAL_PORT}" -N -f -o ServerAliveInterval=60 \
+            -o ExitOnForwardFailure=yes -o StrictHostKeyChecking=no "$HOST"
+        SSH_PID=$!
+        echo "$SSH_PID" > "$PID_FILE"
+        echo "[+] Reverse tunnel active: $HOST:$REMOTE_PORT -> localhost:$LOCAL_PORT"
+        echo "[+] PID: $SSH_PID"
+        ;;
+
+    list|--list|-l)
+        echo "[*] Active Tunnels:"
+        echo ""
+        FOUND=0
+        for pidfile in "$PID_DIR"/*.pid; do
+            [ -f "$pidfile" ] || continue
+            TUNNEL_ID=$(basename "$pidfile" .pid)
+            PID=$(cat "$pidfile")
+            if kill -0 "$PID" 2>/dev/null; then
+                TYPE=$(echo "$TUNNEL_ID" | cut -d_ -f1)
+                echo "  [$TUNNEL_ID] PID=$PID  type=$TYPE  status=ACTIVE"
+                FOUND=$((FOUND+1))
+            else
+                echo "  [$TUNNEL_ID] PID=$PID  status=DEAD"
+                rm -f "$pidfile"
+            fi
+        done
+        if [ "$FOUND" -eq 0 ]; then
+            echo "  (none)"
+        fi
+        ;;
+
+    kill|--kill|-k)
+        TUNNEL_ID="${2:-}"
+        if [ -z "$TUNNEL_ID" ]; then
+            echo "Usage: tunnel-mgr kill <tunnel_id>"
+            echo "       tunnel-mgr list   # to see active tunnels"
+            exit 1
+        fi
+        PID_FILE="$PID_DIR/${TUNNEL_ID}.pid"
+        if [ ! -f "$PID_FILE" ]; then
+            echo "[!] Tunnel '$TUNNEL_ID' not found"
+            exit 1
+        fi
+        PID=$(cat "$PID_FILE")
+        if kill -0 "$PID" 2>/dev/null; then
+            kill "$PID" 2>/dev/null
+            echo "[+] Tunnel $TUNNEL_ID killed (PID: $PID)"
+        else
+            echo "[*] Tunnel $TUNNEL_ID already dead"
+        fi
+        rm -f "$PID_FILE"
+        ;;
+
+    killall|--killall|-K)
+        echo "[*] Killing all tunnels..."
+        for pidfile in "$PID_DIR"/*.pid; do
+            [ -f "$pidfile" ] || continue
+            TUNNEL_ID=$(basename "$pidfile" .pid)
+            PID=$(cat "$pidfile")
+            if kill -0 "$PID" 2>/dev/null; then
+                kill "$PID" 2>/dev/null
+                echo "[+] Killed $TUNNEL_ID (PID: $PID)"
+            else
+                echo "[*] $TUNNEL_ID already dead"
+            fi
+            rm -f "$pidfile"
+        done
+        echo "[+] All tunnels killed"
+        ;;
+
+    help|--help|-h)
+        echo "Usage: tunnel-mgr <command> [options]"
+        echo ""
+        echo "Commands:"
+        echo "  socks <host> [port] [user] [auto]  SOCKS5 proxy via SSH"
+        echo "  forward <lport> <rhost:rport> <ssh> Local port forward"
+        echo "  reverse <rport> <lport> <ssh_host>  Remote port forward"
+        echo "  list                                List active tunnels"
+        echo "  kill <tunnel_id>                    Kill a specific tunnel"
+        echo "  killall                             Kill all tunnels"
+        echo ""
+        echo "All tunnels auto-reconnect (SOCKS mode) with ServerKeepAlive."
+        echo "Tunnel PIDs stored in: $PID_DIR"
+        exit 1
+        ;;
+
+    *)
+        echo "[!] Unknown command: $1"
+        echo "Run: tunnel-mgr help"
+        exit 1
+        ;;
+esac

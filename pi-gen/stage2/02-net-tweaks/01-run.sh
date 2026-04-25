@@ -1,4 +1,5 @@
 #!/bin/bash -e
+set -euo pipefail
 # stage2/02-net-tweaks/01-run.sh — Network configuration for ZERO-DAY OS
 
 # Use systemd-networkd instead of NetworkManager

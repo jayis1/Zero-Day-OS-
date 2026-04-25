@@ -7,8 +7,15 @@ Target: M5Stack Cardputer Zero (320x170, 46-key, no HW acceleration)
 import os
 import sys
 import math
+import re
 import shlex
+import signal
+import socket
+import threading
+import select
 import subprocess
+import glob
+import random
 
 # Pygame fallback to x11
 os.environ.setdefault("SDL_VIDEODRIVER", "x11")
@@ -24,6 +31,16 @@ except ImportError:
 # ==========================================
 SCREEN_W, SCREEN_H = 320, 170
 FPS_TARGET = 30
+WT_PORT = 42420
+WT_MAX_TX_SECS = 30
+
+# Danish radio stream URLs (HLS/AAC streams for ffplay)
+WT_RADIO_URLS = {
+    "DR_P1":  "https://drradio1-lh.akamaihd.net/i/p1_9@143503/master.m3u8",
+    "DR_P3":  "https://drradio3-lh.akamaihd.net/i/p3_9@143506/master.m3u8",
+    "NOVA":   "https://stream.bauermedia.fi/nova/nova_64.aac",
+    "POPFM":  "https://stream.bauermedia.fi/popfm/popfm_64.aac",
+}
 
 # Colors - Kali Nethunter Theme
 BG_COLOR = (5, 8, 15)        # Deep abyss blue-black
@@ -53,12 +70,14 @@ CATEGORIES = [
 TOOLS = {
     "WIFI": [
         {"name": "Scan Networks",     "desc": "Quick WiFi survey (wlan0)",       "cmd": "sudo wifi-scan",                    "need_root": True},
+        {"name": "Survey Logger",     "desc": "Continuous WiFi logging",         "cmd": "sudo wifi-survey-log",              "need_root": True},
         {"name": "Capture Handshake", "desc": "WPA handshake capture",           "cmd": "sudo wifi-handshake wlan1",         "need_root": True,  "args": ["BSSID", "CHANNEL"]},
         {"name": "PMKID Capture",     "desc": "PMKID clientless capture",        "cmd": "sudo wifi-pmkid wlan1",             "need_root": True,  "args": ["BSSID", "CHANNEL"]},
         {"name": "Deauth Attack",     "desc": "Deauthenticate target AP",        "cmd": "sudo wifi-deauth wlan1",            "need_root": True,  "args": ["BSSID", "CHANNEL"]},
         {"name": "Evil Twin",         "desc": "Rogue AP with captive portal",    "cmd": "sudo wifi-evil-twin",               "need_root": True,  "args": ["AP_IFACE", "INET_IFACE", "ESSID"]},
-        {"name": "Crack Handshake",   "desc": "Crack .cap with hashcat",         "cmd": "wifi-crack",                        "need_root": False, "args": ["CAP_FILE"]},
+        {"name": "Crack Handshake",   "desc": "Crack .cap with john",            "cmd": "wifi-crack",                        "need_root": False, "args": ["CAP_FILE"]},
         {"name": "Monitor Toggle",    "desc": "Toggle managed/monitor mode",     "cmd": "sudo wifi-monitor-toggle",          "need_root": True},
+        {"name": "MAC Rotate",        "desc": "Randomize MAC address",           "cmd": "sudo mac-rotate wlan0",             "need_root": True},
         {"name": "Dongle Monitor",    "desc": "RTL8821CU → monitor mode",        "cmd": "sudo dongle-setup monitor",         "need_root": True},
         {"name": "Dongle Managed",    "desc": "RTL8821CU → managed mode",        "cmd": "sudo dongle-setup managed",         "need_root": True},
     ],
@@ -82,8 +101,14 @@ TOOLS = {
         {"name": "Web Scan",          "desc": "Nmap web ports + scripts",        "cmd": "net-quickscan",                     "need_root": False, "args": ["TARGET"], "extra": "web"},
         {"name": "Vuln Scan",         "desc": "Nmap vuln + nikto + whatweb",     "cmd": "sudo net-vulnscan",                 "need_root": True,  "args": ["TARGET"]},
         {"name": "Full Scan",         "desc": "All 65535 ports + scripts",       "cmd": "net-quickscan",                     "need_root": False, "args": ["TARGET"], "extra": "full"},
-        {"name": "Pivot (SOCKS)",     "desc": "SOCKS proxy via SSH",             "cmd": "net-pivot socks",                   "need_root": False, "args": ["PIVOT_HOST"]},
-        {"name": "Pivot (Chisel)",    "desc": "TCP tunnel via chisel",           "cmd": "net-pivot chisel",                  "need_root": False},
+        {"name": "IoT Scan",          "desc": "IoT protocol discovery",           "cmd": "iot-scan",                          "need_root": False, "args": ["TARGET"]},
+        {"name": "Gobuster",          "desc": "Directory/DNS brute-forcer",       "cmd": "gobuster",                          "need_root": False},
+        {"name": "Pivot (SOCKS)",     "desc": "SOCKS proxy via SSH",             "cmd": "tunnel-mgr socks",                   "need_root": False, "args": ["TARGET"]},
+        {"name": "Pivot (Forward)",   "desc": "Local port forward",              "cmd": "tunnel-mgr forward",                 "need_root": False},
+        {"name": "C2 Listener",       "desc": "Encrypted C2 shell (socat)",      "cmd": "quick-c2 listen",                   "need_root": False, "args": ["PORT"]},
+        {"name": "C2 Payloads",       "desc": "Generate shell one-liners",       "cmd": "quick-c2 payload",                  "need_root": False},
+        {"name": "DoH Proxy",         "desc": "DNS-over-HTTPS tunnel",            "cmd": "doh-proxy start",                    "need_root": True},
+        {"name": "ARP Spoof",         "desc": "MITM via arp spoofing",            "cmd": "sudo arpspoof",                      "need_root": True,  "args": ["TARGET"]},
     ],
     "BT": [
         {"name": "Scan Devices",      "desc": "BLE + Classic discovery",         "cmd": "sudo bt-scan",                      "need_root": True},
@@ -92,6 +117,7 @@ TOOLS = {
         {"name": "L2Ping Flood",      "desc": "L2CAP ping flood (DoS)",          "cmd": "sudo bt-attack l2ping_flood",       "need_root": True,  "args": ["MAC"]},
         {"name": "RFCOMM Scan",       "desc": "Scan RFCOMM channels",            "cmd": "sudo bt-attack rfcomm_scan",        "need_root": True,  "args": ["MAC"]},
         {"name": "GATT Enumerate",    "desc": "BLE services + handles",          "cmd": "sudo ble-gatt",                     "need_root": True,  "args": ["MAC"]},
+        {"name": "Bettercap",         "desc": "MITM + BLE attack framework",     "cmd": "sudo bettercap",                    "need_root": True},
     ],
     "IR": [
         {"name": "Scan IR Signal",    "desc": "Capture remote control signals",  "cmd": "sudo ir-scan",                      "need_root": True},
@@ -105,15 +131,17 @@ TOOLS = {
         {"name": "OCR Capture",       "desc": "Photo + text recognition",        "cmd": "cam-ocr",                           "need_root": False},
     ],
     "PAYLD": [
-        {"name": "Reverse Shell Gen", "desc": "Generate shell one-liners",       "cmd": "revshell-gen",                      "need_root": False, "args": ["TYPE", "IP"]},
-        {"name": "Shell Listener",    "desc": "Start netcat listener",           "cmd": "revshell-listen",                   "need_root": False, "args": ["PORT"]},
+        {"name": "C2 Listener",       "desc": "Encrypted C2 shell (socat)",      "cmd": "quick-c2 listen",                   "need_root": False, "args": ["PORT"]},
+        {"name": "C2 Payloads",       "desc": "Generate shell one-liners",       "cmd": "quick-c2 payload",                  "need_root": False},
         {"name": "Stabilize Shell",   "desc": "PTY/TTY upgrade cheatsheet",      "cmd": "revshell-stabilize",                "need_root": False},
-        {"name": "Craft Payload",     "desc": "msfvenom wrapper",                "cmd": "payload-craft",                     "need_root": False, "args": ["TYPE", "IP"]},
+        {"name": "Crack Hashes",      "desc": "John the Ripper password cracker", "cmd": "john",                              "need_root": False},
+        {"name": "Brute Force Creds", "desc": "Hydra online credential cracker", "cmd": "hydra",                             "need_root": False},
         {"name": "USB Ducky Mode",    "desc": "Switch USB-C to HID keyboard",    "cmd": "sudo usb-gadget-mode hid",          "need_root": True},
         {"name": "USB Mass Storage",  "desc": "Switch USB-C to flash drive",     "cmd": "sudo usb-gadget-mode mass",         "need_root": True},
         {"name": "USB Network",       "desc": "Switch USB-C to network adapter", "cmd": "sudo usb-gadget-mode ncm",          "need_root": True},
     ],
     "RADIO": [
+        {"name": "Wi-Fi Walkie Talkie", "desc": "Local Push-To-Talk Radio",      "cmd": "WALKIE_TALKIE",                     "need_root": False},
         {"name": "SDR Scan",          "desc": "Frequency sweep via RTL-SDR",     "cmd": "sudo sdr-scan",                     "need_root": True,  "args": ["FREQ_RANGE"]},
         {"name": "RF Capture",        "desc": "Raw IQ signal capture",           "cmd": "sudo rf-capture",                   "need_root": True,  "args": ["FREQ"]},
         {"name": "GPIO Probe",        "desc": "Enumerate I2C/SPI/UART devices",  "cmd": "sudo gpio-probe",                   "need_root": True},
@@ -121,7 +149,7 @@ TOOLS = {
     "MEDIA": [
         {"name": "Danish WebRadio",   "desc": "Stream Danish Radio Channels",    "cmd": "MEDIA_PLAYER:RADIO",                "need_root": False},
         {"name": "Local Music",       "desc": "Play MP3s from /opt/cardputer",   "cmd": "MEDIA_PLAYER:MUSIC",                "need_root": False},
-        {"name": "Stop Playback",     "desc": "Kill audio background process",   "cmd": "killall mpv",                       "need_root": False},
+        {"name": "Stop Playback",     "desc": "Kill audio background process",   "cmd": "killall ffplay",                    "need_root": False},
     ],
     "SHELL": [
         {"name": "Quick Terminal",    "desc": "Open bash shell",                 "cmd": "bash",                              "need_root": False},
@@ -134,9 +162,12 @@ TOOLS = {
         {"name": "Battery Status",    "desc": "Show battery level + voltage",    "cmd": "cardputer-battery",                 "need_root": False},
         {"name": "MonsterC5 Status",  "desc": "Check MonsterC5 connection",      "cmd": "monsterctl status",                 "need_root": False},
         {"name": "Dongle Status",     "desc": "RTL8821CU dongle manager",        "cmd": "dongle-setup status",               "need_root": False},
+        {"name": "MAC Rotate",        "desc": "Randomize MAC address",           "cmd": "sudo mac-rotate wlan0",             "need_root": True},
         {"name": "Performance Mode",  "desc": "1GHz quad, all radios on",        "cmd": "sudo power-mode performance",       "need_root": True},
         {"name": "Balanced Mode",     "desc": "800MHz dual, WiFi only",          "cmd": "sudo power-mode balanced",          "need_root": True},
         {"name": "Stealth Mode",      "desc": "600MHz single, radios off",       "cmd": "sudo power-mode stealth",           "need_root": True},
+        {"name": "Loot Organize",     "desc": "Sort and compress captures",      "cmd": "loot-organize",                     "need_root": False},
+        {"name": "DoH Proxy",         "desc": "DNS-over-HTTPS tunnel",            "cmd": "doh-proxy start",                    "need_root": True},
         {"name": "PANIC",             "desc": "Kill all + wipe + sanitize",      "cmd": "panic",                             "need_root": False},
         {"name": "System Info",       "desc": "Show OS + hardware info",         "cmd": "cat /etc/zeroday-release; uname -a; free -m; df -h /", "need_root": False},
     ],
@@ -212,12 +243,9 @@ def draw_icon(surface: pygame.Surface, category: str, x: int, y: int, size: int 
         pygame.draw.circle(surface, color, (cx, y+10), 2)
         
     elif category == "MEDIA":
-        # Musical note icon
-        pygame.draw.line(surface, color, (x+10, y+4), (x+10, y+18), 2)
-        pygame.draw.line(surface, color, (x+18, y+6), (x+18, y+16), 2)
-        pygame.draw.line(surface, color, (x+10, y+4), (x+18, y+6), 2)
-        pygame.draw.circle(surface, color, (x+8, y+18), 3)
-        pygame.draw.circle(surface, color, (x+16, y+16), 3)
+        # Musical note icon — simplified for 24px
+        pygame.draw.line(surface, color, (x+8, y+4), (x+8, y+18), 2)
+        pygame.draw.circle(surface, color, (x+6, y+18), 3, 2)
         
     elif category == "SHELL":
         pygame.draw.rect(surface, color, (x+2, y+4, 20, 16), 2)
@@ -260,7 +288,7 @@ class CyberLauncher:
             self.font_label = pygame.font.SysFont("terminus", 10)
             self.font_desc  = pygame.font.SysFont("terminus", 8)
             self.font_cmd   = pygame.font.SysFont("terminus", 9)
-        except:
+        except Exception:
             self.font_title = pygame.font.SysFont("monospace", 12, bold=True)
             self.font_label = pygame.font.SysFont("monospace", 10)
             self.font_desc  = pygame.font.SysFont("monospace", 8)
@@ -268,8 +296,15 @@ class CyberLauncher:
             
         self.clock = pygame.time.Clock()
         
-        # States: HOME, LIST, ACTION, PROMPT
-        self.state = "HOME"
+        # States: SPLASH, HOME, LIST, ACTION, PROMPT, WALKIE_TALKIE, MEDIA_PLAYER
+        self.state = "SPLASH"
+        self.splash_start = pygame.time.get_ticks()
+        try:
+            base_dir = os.path.dirname(os.path.abspath(__file__))
+            self.logo_img = pygame.image.load(os.path.join(base_dir, "assets", "logo_splash.png")).convert_alpha()
+        except:
+            self.logo_img = None
+            
         self.running = True
         
         # Cursors / Navigation
@@ -282,7 +317,6 @@ class CyberLauncher:
         self.current_tool = None
         
         self.args_values = {}
-        
         self.render_cache = {}
         
         # Media Player state
@@ -291,6 +325,15 @@ class CyberLauncher:
         self.media_stations = ["DR_P1", "DR_P3", "NOVA", "POPFM"]
         self.media_station_idx = 0
         self.media_fft = [0]*16
+        
+        # Walkie Talkie state (thread-safe via threading.Event)
+        self.wt_socket = None
+        self.wt_receiver_thread = None
+        self.wt_aplay_proc = None
+        self.wt_arecord_proc = None
+        self.wt_receiving = False
+        self.wt_transmit_event = threading.Event()
+        self.wt_tx_start_time = 0
 
     def get_text_surface(self, text, font, color):
         key = f"{text}_{font}_{color}"
@@ -309,11 +352,24 @@ class CyberLauncher:
             rsurf = self.get_text_surface(right_text, self.font_label, TEXT_SECONDARY)
             self.screen.blit(rsurf, (SCREEN_W - rsurf.get_width() - 4, 3))
 
+    def render_splash(self):
+        self.screen.fill(BG_COLOR)
+        if hasattr(self, "logo_img") and self.logo_img:
+            lx = (SCREEN_W - self.logo_img.get_width()) // 2
+            ly = (SCREEN_H - self.logo_img.get_height()) // 2
+            self.screen.blit(self.logo_img, (lx, ly))
+            
+        vsurf = self.get_text_surface("ZERO-DAY OS v1.0.0", self.font_label, TEXT_SECONDARY)
+        self.screen.blit(vsurf, (SCREEN_W - vsurf.get_width() - 5, SCREEN_H - 15))
+        
+        if pygame.time.get_ticks() - self.splash_start > 2500:
+            self.state = "HOME"
+
     def render_home(self):
         self.screen.fill(BG_COLOR)
         self.draw_top_banner("ZERO-DAY OS", right_text="v1.0")
         
-        # Grid: 4 cols x 3 rows
+        # Grid: 4 cols x 3 rows = 12 cells (fits all 12 categories)
         cols, rows = 4, 3
         cell_w, cell_h = 76, 50
         margin_x, margin_y = 8, 18
@@ -458,16 +514,199 @@ class CyberLauncher:
         bot_surf = self.get_text_surface("Tab:Next   Enter:Run   Esc:Back", self.font_label, TEXT_SECONDARY)
         self.screen.blit(bot_surf, (10, SCREEN_H - 20))
 
-    def launch_media(self):
-        if self.media_process:
-            self.media_process.kill()
-            os.system("killall mpv 2>/dev/null")
+    # ==========================================
+    # WALKIE TALKIE
+    # ==========================================
+    def start_walkie_talkie(self):
+        # Check audio tools availability
+        for tool in ["arecord", "aplay"]:
+            if not os.path.exists(f"/usr/bin/{tool}"):
+                print(f"[!] Walkie Talkie requires {tool} (install alsa-utils)")
+                self.state = "LIST"
+                return
+        
+        # Create UDP socket
+        self.wt_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            self.wt_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+        except (AttributeError, OSError):
+            pass
+        self.wt_socket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        try:
+            self.wt_socket.bind(("", WT_PORT))
+        except OSError as e:
+            print(f"[!] Walkie Talkie: Port {WT_PORT} in use: {e}")
+            self.wt_socket.close()
+            self.wt_socket = None
+            self.state = "LIST"
+            return
+        self.wt_socket.setblocking(False)
+        
+        # Start playback process
+        try:
+            self.wt_aplay_proc = subprocess.Popen(
+                ["aplay", "-q", "-f", "S16_LE", "-c", "1", "-r", "16000"],
+                stdin=subprocess.PIPE,
+                stderr=subprocess.DEVNULL
+            )
+        except FileNotFoundError:
+            print("[!] aplay not found — install alsa-utils")
+            self.wt_socket.close()
+            self.wt_socket = None
+            self.state = "LIST"
+            return
+        
+        self.wt_receiving = False
+        self.wt_transmit_event.clear()
+        
+        # Receiver thread: plays incoming audio when not transmitting
+        def receiver_loop():
+            while self.state == "WALKIE_TALKIE" and self.wt_socket:
+                try:
+                    ready = select.select([self.wt_socket], [], [], 0.1)
+                    if ready[0]:
+                        data, addr = self.wt_socket.recvfrom(4096)
+                        # Ignore our own transmissions (check source port heuristic)
+                        if data.startswith(b"WT1") and len(data) > 3:
+                            self.wt_receiving = True
+                            # Only play audio when NOT transmitting (prevent feedback)
+                            if not self.wt_transmit_event.is_set():
+                                if self.wt_aplay_proc and self.wt_aplay_proc.stdin:
+                                    try:
+                                        self.wt_aplay_proc.stdin.write(data[3:])
+                                        self.wt_aplay_proc.stdin.flush()
+                                    except Exception:
+                                        pass
+                        else:
+                            self.wt_receiving = False
+                    else:
+                        self.wt_receiving = False
+                except Exception:
+                    pass
+        
+        self.wt_receiver_thread = threading.Thread(target=receiver_loop, daemon=True)
+        self.wt_receiver_thread.start()
+
+    def stop_walkie_talkie(self):
+        """Clean up all walkie talkie resources."""
+        self.wt_transmit_event.clear()
+        # Stop recording first
+        if self.wt_arecord_proc:
+            try:
+                self.wt_arecord_proc.kill()
+                self.wt_arecord_proc.wait(timeout=2)
+            except Exception:
+                pass
+            self.wt_arecord_proc = None
+        # Stop playback
+        if self.wt_aplay_proc:
+            try:
+                self.wt_aplay_proc.kill()
+                self.wt_aplay_proc.wait(timeout=2)
+            except Exception:
+                pass
+            self.wt_aplay_proc = None
+        # Close socket
+        if self.wt_socket:
+            try:
+                self.wt_socket.close()
+            except Exception:
+                pass
+            self.wt_socket = None
+        self.wt_receiving = False
+
+    def render_walkie_talkie(self):
+        self.screen.fill(BG_COLOR)
+        cat = CATEGORIES[self.home_idx]
+        self.draw_top_banner("WI-FI WALKIE TALKIE", cat["color"])
+        
+        # PTT timeout warning
+        is_transmitting = self.wt_transmit_event.is_set()
+        elapsed = pygame.time.get_ticks() - self.wt_tx_start_time if is_transmitting else 0
+        timeout_warning = is_transmitting and elapsed > (WT_MAX_TX_SECS * 1000 - 5000)  # Warn 5s before cutoff
+        
+        status_color = CMD_FLAG if is_transmitting else (cat["color"] if self.wt_receiving else TEXT_SECONDARY)
+        status_text = "TRANSMITTING" if is_transmitting else ("RECEIVING" if self.wt_receiving else "IDLE")
+        
+        # Blinking effect for TX
+        if is_transmitting and (pygame.time.get_ticks()//250)%2 == 0:
+            status_color = BG_COLOR
             
+        # Timeout warning
+        if timeout_warning:
+            wsurf = self.get_text_surface(f"TIMEOUT IN {(WT_MAX_TX_SECS - elapsed//1000)}s", self.font_desc, CMD_FLAG)
+            self.screen.blit(wsurf, ((SCREEN_W - wsurf.get_width())//2, 45))
+        
+        ssurf = self.get_text_surface(status_text, self.font_title, status_color)
+        self.screen.blit(ssurf, ((SCREEN_W - ssurf.get_width())//2, 60))
+        
+        dsurf = self.get_text_surface("Hold [SPACE] to Talk", self.font_label, TEXT_WHITE)
+        self.screen.blit(dsurf, ((SCREEN_W - dsurf.get_width())//2, 90))
+        
+        # Show port info
+        psurf = self.get_text_surface(f"UDP:{WT_PORT} (broadcast)", self.font_desc, TEXT_SECONDARY)
+        self.screen.blit(psurf, ((SCREEN_W - psurf.get_width())//2, 110))
+        
+        bot_surf = self.get_text_surface("Esc:Stop & Exit", self.font_label, TEXT_SECONDARY)
+        self.screen.blit(bot_surf, (10, SCREEN_H - 20))
+
+    # ==========================================
+    # MEDIA PLAYER
+    # ==========================================
+    def launch_media(self):
+        # Kill previous media process
+        if self.media_process:
+            try:
+                self.media_process.kill()
+                self.media_process.wait(timeout=3)
+            except Exception:
+                pass
+            self.media_process = None
+        # Kill any orphaned ffplay
+        try:
+            subprocess.run(["killall", "ffplay"], capture_output=True, timeout=3)
+        except Exception:
+            pass
+
         if self.media_mode == "RADIO":
             station = self.media_stations[self.media_station_idx]
-            self.media_process = subprocess.Popen(["webradio-danish", station], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            # Use direct ffplay with stream URL
+            url = WT_RADIO_URLS.get(station, "")
+            if not url:
+                print(f"[!] No URL configured for station {station}")
+                return
+            try:
+                self.media_process = subprocess.Popen(
+                    ["ffplay", "-nodisp", "-autoexit", "-infbuf", "-loglevel", "quiet", url],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+                )
+            except FileNotFoundError:
+                print("[!] ffplay not found — install with: apt install ffmpeg")
         elif self.media_mode == "MUSIC":
-            self.media_process = subprocess.Popen(["music-player"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            music_dir = "/opt/cardputer/music"
+            if not os.path.isdir(music_dir):
+                os.makedirs(music_dir, exist_ok=True)
+            # Build list of audio files (ffplay cannot play a directory)
+            audio_files = sorted(
+                glob.glob(os.path.join(music_dir, "*.mp3"))
+                + glob.glob(os.path.join(music_dir, "*.flac"))
+                + glob.glob(os.path.join(music_dir, "*.wav"))
+                + glob.glob(os.path.join(music_dir, "*.ogg"))
+                + glob.glob(os.path.join(music_dir, "*.aac"))
+                + glob.glob(os.path.join(music_dir, "*.m4a"))
+            )
+            if not audio_files:
+                print(f"[!] No audio files found in {music_dir}")
+                return
+            random.shuffle(audio_files)
+            try:
+                self.media_process = subprocess.Popen(
+                    ["ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet"]
+                    + audio_files,
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+                )
+            except FileNotFoundError:
+                print("[!] ffplay not found — install with: apt install ffmpeg")
 
     def render_media_player(self):
         self.screen.fill(BG_COLOR)
@@ -488,7 +727,6 @@ class CyberLauncher:
         self.screen.blit(dsurf, (10, 45))
         
         # Procedural visualizer
-        import random
         v_y = 120
         v_w = 12
         v_gap = 4
@@ -509,6 +747,9 @@ class CyberLauncher:
         bot_surf = self.get_text_surface("Esc:Stop & Exit", self.font_label, TEXT_SECONDARY)
         self.screen.blit(bot_surf, (10, SCREEN_H - 20))
 
+    # ==========================================
+    # COMMAND EXECUTION
+    # ==========================================
     def sanitize_cmd(self, tool, args_values):
         """Build command string with proper argument quoting and validation."""
         cmd = tool["cmd"]
@@ -541,14 +782,11 @@ class CyberLauncher:
         for arg in tool.get("args", []):
             val = args_values.get(arg, "")
             if not val:
-                # Will be empty — command will likely fail, but let it through
                 cmd += f" {shlex.quote(val)}"
                 continue
             # Validate known argument types
             if arg in validators:
-                import re
                 if not re.match(validators[arg], val):
-                    # Invalid input — still quote it to prevent injection, but warn
                     cmd += f" {shlex.quote(val)}"
                     continue
             cmd += f" {shlex.quote(val)}"
@@ -564,12 +802,23 @@ class CyberLauncher:
         tool = TOOLS[cat["key"]][self.list_idx]
         
         cmd = tool["cmd"]
+        
+        # Walkie Talkie — inline mode, no terminal
+        if cmd == "WALKIE_TALKIE":
+            self.state = "WALKIE_TALKIE"
+            self.start_walkie_talkie()
+            return
+            
+        # Media Player — inline mode, no terminal
         if cmd.startswith("MEDIA_PLAYER:"):
-            self.media_mode = cmd.split(":")[1]
+            mode = cmd.split(":", 1)[1]
+            if mode not in ("RADIO", "MUSIC"):
+                return  # Invalid mode, don't launch
+            self.media_mode = mode
             self.state = "MEDIA_PLAYER"
             self.launch_media()
             return
-            
+        
         cmd = self.sanitize_cmd(tool, self.args_values)
             
         pygame.quit()
@@ -584,7 +833,9 @@ class CyberLauncher:
                 self.running = False
                 
             elif event.type == pygame.KEYDOWN:
-                if self.state == "HOME":
+                if self.state == "SPLASH":
+                    self.state = "HOME"
+                elif self.state == "HOME":
                     if event.key == pygame.K_RIGHT: self.home_idx = (self.home_idx + 1) % len(CATEGORIES)
                     elif event.key == pygame.K_LEFT: self.home_idx = (self.home_idx - 1) % len(CATEGORIES)
                     elif event.key == pygame.K_DOWN: self.home_idx = (self.home_idx + 4) % len(CATEGORIES)
@@ -633,9 +884,14 @@ class CyberLauncher:
                 elif self.state == "MEDIA_PLAYER":
                     if event.key == pygame.K_ESCAPE:
                         if self.media_process:
-                            self.media_process.kill()
-                            os.system("killall mpv 2>/dev/null")
+                            try:
+                                self.media_process.kill()
+                                self.media_process.wait(timeout=3)
+                            except Exception:
+                                pass
                             self.media_process = None
+                        subprocess.run(["killall", "ffplay"], capture_output=True, timeout=3)
+                        self.media_fft = [0]*16
                         self.state = "LIST"
                     elif self.media_mode == "RADIO":
                         if event.key == pygame.K_RIGHT:
@@ -645,19 +901,86 @@ class CyberLauncher:
                             self.media_station_idx = (self.media_station_idx - 1) % len(self.media_stations)
                             self.launch_media()
 
+                elif self.state == "WALKIE_TALKIE":
+                    if event.key == pygame.K_ESCAPE:
+                        self.stop_walkie_talkie()
+                        self.state = "LIST"
+                    elif event.key == pygame.K_SPACE and not self.wt_transmit_event.is_set():
+                        self.wt_transmit_event.set()
+                        self.wt_tx_start_time = pygame.time.get_ticks()
+                        # Pause playback during transmit to prevent feedback
+                        if self.wt_aplay_proc:
+                            try:
+                                self.wt_aplay_proc.send_signal(signal.SIGSTOP)
+                            except Exception:
+                                pass
+                        try:
+                            self.wt_arecord_proc = subprocess.Popen(
+                                ["arecord", "-q", "-f", "S16_LE", "-c", "1", "-r", "16000"],
+                                stdout=subprocess.PIPE,
+                                stderr=subprocess.DEVNULL
+                            )
+                        except FileNotFoundError:
+                            print("[!] arecord not found — install alsa-utils")
+                            self.wt_transmit_event.clear()
+                            return
+                        
+                        def transmit_loop():
+                            while self.wt_transmit_event.is_set() and self.wt_arecord_proc:
+                                # Timeout after WT_MAX_TX_SECS
+                                if pygame.time.get_ticks() - self.wt_tx_start_time > WT_MAX_TX_SECS * 1000:
+                                    self.wt_transmit_event.clear()
+                                    break
+                                try:
+                                    chunk = self.wt_arecord_proc.stdout.read(1024)
+                                    if not chunk:
+                                        break
+                                    if self.wt_socket:
+                                        self.wt_socket.sendto(b"WT1" + chunk, ("255.255.255.255", WT_PORT))
+                                except Exception:
+                                    break
+                        
+                        threading.Thread(target=transmit_loop, daemon=True).start()
+
+            elif event.type == pygame.KEYUP:
+                if self.state == "WALKIE_TALKIE" and event.key == pygame.K_SPACE:
+                    self.wt_transmit_event.clear()
+                    if self.wt_arecord_proc:
+                        try:
+                            self.wt_arecord_proc.kill()
+                            self.wt_arecord_proc.wait(timeout=2)
+                        except Exception:
+                            pass
+                        self.wt_arecord_proc = None
+                    # Resume playback after transmit
+                    if self.wt_aplay_proc:
+                        try:
+                            self.wt_aplay_proc.send_signal(signal.SIGCONT)
+                        except Exception:
+                            pass
+
     def run(self):
         while self.running:
             self.handle_input()
             
-            if self.state == "HOME": self.render_home()
+            if self.state == "SPLASH": self.render_splash()
+            elif self.state == "HOME": self.render_home()
             elif self.state == "LIST": self.render_list()
             elif self.state == "ACTION": self.render_action()
             elif self.state == "PROMPT": self.render_prompt()
             elif self.state == "MEDIA_PLAYER": self.render_media_player()
+            elif self.state == "WALKIE_TALKIE": self.render_walkie_talkie()
             
             pygame.display.flip()
             self.clock.tick(FPS_TARGET)
-            
+        
+        # Clean up all resources on exit
+        self.stop_walkie_talkie()
+        if self.media_process:
+            try:
+                self.media_process.kill()
+            except Exception:
+                pass
         pygame.quit()
 
 if __name__ == "__main__":

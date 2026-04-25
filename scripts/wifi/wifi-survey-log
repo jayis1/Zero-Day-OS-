@@ -1,0 +1,134 @@
+#!/bin/bash
+set -euo pipefail
+# /usr/local/bin/wifi-survey-log
+# Continuous WiFi survey logger — wardriving without GPS
+# Usage: wifi-survey-log [iface] [duration]
+# Duration: seconds, or 'until-stop' (default: indefinite)
+
+IFACE="${1:-wlan0}"
+DURATION="${2:-0}"
+LOOT="/opt/cardputer/loot/wifi"
+TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+LOGFILE="$LOOT/survey_${TIMESTAMP}.log"
+
+# Validate interface name
+if ! echo "$IFACE" | grep -qE '^[a-zA-Z0-9_]+$'; then
+    echo "[!] Invalid interface name: $IFACE"
+    exit 1
+fi
+
+# Validate duration (0 = indefinite)
+if [ "$DURATION" != "0" ]; then
+    if ! echo "$DURATION" | grep -qE '^[0-9]+$'; then
+        echo "[!] Invalid duration: $DURATION (use seconds, or 0 for indefinite)"
+        exit 1
+    fi
+fi
+
+mkdir -p "$LOOT"
+
+if ! command -v iw &>/dev/null; then
+    echo "[!] iw not found. Install: apt install iw"
+    exit 1
+fi
+
+if [ "$(id -u)" -ne 0 ]; then
+    echo "[!] Root required for monitor mode. Run with sudo."
+    exit 1
+fi
+
+echo "[*] WiFi Survey Logger — ZERO-DAY OS"
+echo "[*] Interface: $IFACE"
+echo "[*] Log file:   $LOGFILE"
+if [ "$DURATION" = "0" ]; then
+    echo "[*] Duration:   Indefinite (Ctrl+C to stop)"
+else
+    echo "[*] Duration:   ${DURATION}s"
+fi
+echo ""
+
+# Save current mode
+ORIG_MODE=$(iw dev "$IFACE" info 2>/dev/null | grep "type" | awk '{print $2}') || ORIG_MODE="managed"
+
+# Switch to managed mode if in monitor
+if [ "$ORIG_MODE" = "monitor" ]; then
+    echo "[*] Switching $IFACE from monitor to managed mode..."
+    ip link set "$IFACE" down 2>/dev/null || true
+    iw dev "$IFACE" set type managed 2>/dev/null || true
+    ip link set "$IFACE" up 2>/dev/null || true
+    sleep 2
+fi
+
+# Header
+echo "=== WiFi Survey: $(date) ===" > "$LOGFILE"
+echo "=== Interface: $IFACE ===" >> "$LOGFILE"
+echo "=== Duration: ${DURATION}s (0=indefinite) ===" >> "$LOGFILE"
+echo "" >> "$LOGFILE"
+
+SCAN_COUNT=0
+AP_COUNT=0
+
+cleanup() {
+    echo ""
+    echo "[*] Stopping survey..."
+    # Kill background scan loop
+    if [ -n "${SCAN_PID:-}" ] && kill -0 "$SCAN_PID" 2>/dev/null; then
+        kill "$SCAN_PID" 2>/dev/null
+    fi
+    # Unique APs seen
+    UNIQUE=$(grep "^AP:" "$LOGFILE" 2>/dev/null | sort -u | wc -l)
+    echo "[+] Survey complete"
+    echo "[+] Scans performed: $SCAN_COUNT"
+    echo "[+] Unique APs seen:  $UNIQUE"
+    echo "[+] Log saved:        $LOGFILE"
+    exit 0
+}
+trap cleanup INT TERM
+
+echo "[*] Starting continuous scan (every 5 seconds)..."
+
+scan_loop() {
+    while true; do
+        SCAN_TS=$(date '+%Y-%m-%d %H:%M:%S')
+        echo "--- Scan at $SCAN_TS ---" >> "$LOGFILE"
+        iw dev "$IFACE" scan trigger 2>/dev/null || true
+        sleep 2  # let scan complete
+        iw dev "$IFACE" scan dump 2>/dev/null | while IFS= read -r line; do
+            if echo "$line" | grep -q "BSS "; then
+                BSSID=$(echo "$line" | grep -oE '([0-9a-f]{2}:){5}[0-9a-f]{2}')
+                echo "AP: $BSSID" >> "$LOGFILE"
+            elif echo "$line" | grep -q "SSID: "; then
+                SSID=$(echo "$line" | sed 's/.*SSID: //')
+                echo "  SSID: $SSID" >> "$LOGFILE"
+            elif echo "$line" | grep -q "signal: "; then
+                SIGNAL=$(echo "$line" | sed 's/.*signal: //; s/ dBm.*//')
+                echo "  Signal: ${SIGNAL} dBm" >> "$LOGFILE"
+            elif echo "$line" | grep -q "DS Parameter set: channel "; then
+                CHAN=$(echo "$line" | sed 's/.*channel //')
+                echo "  Channel: $CHAN" >> "$LOGFILE"
+            elif echo "$line" | grep -q "WPA"; then
+                echo "  Security: WPA" >> "$LOGFILE"
+            elif echo "$line" | grep -q "WPS"; then
+                echo "  WPS: Yes" >> "$LOGFILE"
+            fi
+        done 2>/dev/null
+        echo "" >> "$LOGFILE"
+        SCAN_COUNT=$((SCAN_COUNT+1))
+        sleep 5
+    done
+}
+
+# Start scan loop in background
+scan_loop &
+SCAN_PID=$!
+
+if [ "$DURATION" = "0" ]; then
+    # Indefinite — wait for Ctrl+C
+    wait "$SCAN_PID" 2>/dev/null
+else
+    # Timed — sleep for duration
+    sleep "$DURATION"
+    kill "$SCAN_PID" 2>/dev/null
+fi
+
+cleanup

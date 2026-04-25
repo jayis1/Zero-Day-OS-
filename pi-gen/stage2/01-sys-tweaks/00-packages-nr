@@ -3,6 +3,7 @@ bash
 bind9-host
 console-setup
 cpio
+curl
 dbus
 dconf-cli
 f2fs-tools
@@ -21,6 +22,7 @@ less
 libnftnl11
 libpam-systemd
 logrotate
+macchanger
 man-db
 nano
 net-tools
@@ -32,6 +34,7 @@ psmisc
 python3
 rsync
 rsyslog
+secure-delete
 sudo
 systemd
 traceroute

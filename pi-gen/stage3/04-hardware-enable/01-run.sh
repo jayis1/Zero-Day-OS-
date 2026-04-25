@@ -1,4 +1,5 @@
 #!/bin/bash -e
+set -euo pipefail
 # stage3/04-hardware-enable/01-run.sh — Enable Cardputer Zero hardware
 # Enables I2C, SPI, camera, IR, and other peripherals
 # Note: raspi-config is NOT available in pure Debian — use direct config instead

@@ -1,4 +1,5 @@
 #!/bin/bash -e
+set -euo pipefail
 # stage3/02-xorg-i3/01-run.sh — Install Xorg + i3 window manager
 
 # Configure Xorg for ST7789v3 LCD (framebuffer)

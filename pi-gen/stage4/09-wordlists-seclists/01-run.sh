@@ -1,4 +1,5 @@
 #!/bin/bash -e
+set -euo pipefail
 # stage4/09-wordlists-seclists/01-run.sh — Install SecLists (compressed)
 
 on_chroot << EOF

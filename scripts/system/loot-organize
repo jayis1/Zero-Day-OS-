@@ -1,0 +1,170 @@
+#!/bin/bash
+set -euo pipefail
+# /usr/local/bin/loot-organize
+# Organize and compress captured loot files by date and type
+# Usage: loot-organize [action]
+# Actions: organize (default), compress, status, clean
+
+LOOT="/opt/cardputer/loot"
+ACTION="${1:-organize}"
+
+# Subdirectory categories
+CATEGORIES="wifi bt nfc ir rf cam net recon creds general"
+
+ensure_dirs() {
+    for cat in $CATEGORIES; do
+        mkdir -p "$LOOT/$cat"
+    done
+}
+
+organize_loot() {
+    echo "[*] Organizing loot in $LOOT..."
+    ensure_dirs
+
+    MOVED=0
+
+    # WiFi captures
+    for f in "$LOOT"/*.cap "$LOOT"/*.pcap "$LOOT"/*.hccapx "$LOOT"/*.hc22000 "$LOOT"/*.pmkid; do
+        [ -f "$f" ] || continue
+        mv "$f" "$LOOT/wifi/" 2>/dev/null && MOVED=$((MOVED+1))
+    done
+
+    # Network scans
+    for f in "$LOOT"/*.xml "$LOOT"/*.nmap "$LOOT"/*.gnmap "$LOOT"/*.json; do
+        [ -f "$f" ] || continue
+        case "$(basename "$f")" in
+            *scan*|*nmap*|*disco*|*quick*|*vuln*)
+                mv "$f" "$LOOT/recon/" 2>/dev/null && MOVED=$((MOVED+1))
+                ;;
+            *cred*|*hash*|*pass*|*ntlm*|*secret*)
+                mv "$f" "$LOOT/creds/" 2>/dev/null && MOVED=$((MOVED+1))
+                ;;
+            *)
+                mv "$f" "$LOOT/net/" 2>/dev/null && MOVED=$((MOVED+1))
+                ;;
+        esac
+    done
+
+    # Bluetooth
+    for f in "$LOOT"/*bt* "$LOOT"/*ble* "$LOOT"/*blue*; do
+        [ -f "$f" ] || continue
+        mv "$f" "$LOOT/bt/" 2>/dev/null && MOVED=$((MOVED+1))
+    done
+
+    # NFC/RFID
+    for f in "$LOOT"/*nfc* "$LOOT"/*rfid* "$LOOT"/*mifare*; do
+        [ -f "$f" ] || continue
+        mv "$f" "$LOOT/nfc/" 2>/dev/null && MOVED=$((MOVED+1))
+    done
+
+    # IR signals
+    for f in "$LOOT"/*ir* "$LOOT"/*lirc*; do
+        [ -f "$f" ] || continue
+        mv "$f" "$LOOT/ir/" 2>/dev/null && MOVED=$((MOVED+1))
+    done
+
+    # RF/SDR
+    for f in "$LOOT"/*rtl* "$LOOT"/*sdr* "$LOOT"/*iq* "$LOOT"/*cc1101*; do
+        [ -f "$f" ] || continue
+        mv "$f" "$LOOT/rf/" 2>/dev/null && MOVED=$((MOVED+1))
+    done
+
+    # Camera
+    for f in "$LOOT"/*.jpg "$LOOT"/*.png "$LOOT"/*.mp4 "$LOOT"/*.avi "$LOOT"/*cam* "$LOOT"/*ocr*; do
+        [ -f "$f" ] || continue
+        mv "$f" "$LOOT/cam/" 2>/dev/null && MOVED=$((MOVED+1))
+    done
+
+    # Credentials (broad match)
+    for f in "$LOOT"/*hash* "$LOOT"/*pass* "$LOOT"/*cred* "$LOOT"/*secret* "$LOOT"/*ntlm*; do
+        [ -f "$f" ] || continue
+        mv "$f" "$LOOT/creds/" 2>/dev/null && MOVED=$((MOVED+1))
+    done
+
+    echo "[+] Moved $MOVED files into categorized directories"
+}
+
+compress_loot() {
+    echo "[*] Compressing old loot files (>7 days)..."
+    ensure_dirs
+    COMPRESSED=0
+
+    for cat in $CATEGORIES; do
+        find "$LOOT/$cat" -type f ! -name '*.gz' -mtime +7 2>/dev/null | while read -r f; do
+            [ -f "$f" ] || continue
+            gzip -9 "$f" 2>/dev/null && COMPRESSED=$((COMPRESSED+1))
+        done
+    done
+
+    echo "[+] Compression complete"
+}
+
+show_status() {
+    echo "[*] Loot Directory Status: $LOOT"
+    echo ""
+    echo "Category     Files   Size"
+    echo "────────     ─────   ────"
+    TOTAL_FILES=0
+    TOTAL_SIZE=0
+    for cat in $CATEGORIES; do
+        if [ -d "$LOOT/$cat" ]; then
+            COUNT=$(find "$LOOT/$cat" -type f 2>/dev/null | wc -l)
+            SIZE=$(du -sh "$LOOT/$cat" 2>/dev/null | awk '{print $1}')
+            TOTAL_FILES=$((TOTAL_FILES+COUNT))
+            printf "%-12s %4d   %s\n" "$cat" "$COUNT" "$SIZE"
+        else
+            printf "%-12s %4d   %s\n" "$cat" 0 "-"
+        fi
+    done
+    echo "────────     ─────   ────"
+    OVERALL=$(du -sh "$LOOT" 2>/dev/null | awk '{print $1}')
+    echo "* Total:      $TOTAL_FILES   $OVERALL"
+    echo ""
+    # Check for uncategorized files in root loot dir
+    ROOT_COUNT=$(find "$LOOT" -maxdepth 1 -type f 2>/dev/null | wc -l)
+    if [ "$ROOT_COUNT" -gt 0 ]; then
+        echo "[!] $ROOT_COUNT uncategorized files in $LOOT root"
+        echo "[!] Run 'loot-organize organize' to sort them"
+    fi
+}
+
+clean_loot() {
+    echo "[!] WARNING: This will PERMANENTLY DELETE all captured loot!"
+    read -rp "Type 'WIPE' to confirm: " CONFIRM
+    if [ "$CONFIRM" != "WIPE" ]; then
+        echo "[*] Aborted."
+        exit 0
+    fi
+    for cat in $CATEGORIES; do
+        rm -rf "${LOOT:?}/$cat/"* 2>/dev/null
+    done
+    rm -f "$LOOT"/*.cap "$LOOT"/*.pcap "$LOOT"/*.hccapx "$LOOT"/*.hc22000 2>/dev/null
+    echo "[+] All loot wiped."
+}
+
+case "$ACTION" in
+    organize|--organize|-o)
+        organize_loot
+        ;;
+    compress|--compress|-c)
+        compress_loot
+        ;;
+    status|--status|-s)
+        show_status
+        ;;
+    clean|--clean|-C)
+        clean_loot
+        ;;
+    *)
+        echo "Usage: loot-organize [action]"
+        echo ""
+        echo "Actions:"
+        echo "  organize  — Sort loose files into category dirs (default)"
+        echo "  compress  — Gzip files older than 7 days"
+        echo "  status    — Show loot directory summary"
+        echo "  clean     — Permanently delete all loot (requires 'WIPE' confirm)"
+        echo ""
+        echo "Categories: $CATEGORIES"
+        exit 1
+        ;;
+esac

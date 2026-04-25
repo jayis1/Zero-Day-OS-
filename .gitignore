@@ -25,6 +25,7 @@ pi-gen/export-image/*/rootfs/
 # Build logs
 pi-gen/*.log
 pi-gen/build.log
+pi-gen/build-docker.log
 
 # ── Compiled device tree overlays ─────────────────────────────────────────
 # .dtbo files are compiled from .dts sources — never commit binaries
@@ -151,17 +152,6 @@ secrets/
 .wpa_supplicant
 hostapd.conf
 wpapsk.*
-
-# ── Screenshots and media (already in repo, but ignore new ones) ──────────
-# We track the original screenshots but ignore accidental new ones that
-# might contain sensitive information from real targets.
-
-# Uncomment the following to ignore all screenshots:
-# Screenshot_*.png
-# Screenshot_*.jpg
-# *.mov
-# *.mp4
-# *.avi
 
 # ── Network capture files (from real targets) ─────────────────────────────
 

@@ -1,0 +1,93 @@
+#!/bin/bash
+set -euo pipefail
+# /usr/local/bin/iot-scan
+# IoT-focused Nmap scan presets
+# Targets common IoT protocols: RTSP, MQTT, Modbus, BACnet, UPnP, mDNS
+# Usage: iot-scan <target> [mode]
+# Modes: quick (default), deep, cameras, bacnet, modbus
+
+TARGET="${1:-}"
+MODE="${2:-quick}"
+
+# Validate target (IP, CIDR, or hostname)
+if [ -z "$TARGET" ]; then
+    echo "Usage: iot-scan <target> [mode]"
+    echo ""
+    echo "Modes:"
+    echo "  quick    — Fast top-100 + IoT ports (default)"
+    echo "  deep     — All ports + version detection + IoT scripts"
+    echo "  cameras  — RTSP, HTTP webcam, ONVIF discovery"
+    echo "  bacnet   — BACnet building automation scan"
+    echo "  modbus   — Modbus/TCP industrial scan"
+    echo ""
+    echo "Examples:"
+    echo "  iot-scan 192.168.1.0/24"
+    echo "  iot-scan 10.0.0.1 cameras"
+    echo "  iot-scan 192.168.1.0/24 modbus"
+    exit 1
+fi
+
+# Validate target format
+if ! echo "$TARGET" | grep -qE '^[a-zA-Z0-9._/\-]+$'; then
+    echo "[!] Invalid target: $TARGET"
+    exit 1
+fi
+
+LOOT="/opt/cardputer/loot/recon"
+TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+mkdir -p "$LOOT"
+
+# IoT-common ports: RTSP(554), MQTT(1883/8883), Modbus(502), BACnet(47808),
+# UPnP(1900/5000), ONVIF(3702), Telnet(23), SSH(22), HTTP(80/8080/8443),
+# HTTPS(443), FTP(21), DNS(53), mDNS(5353)
+IOT_PORTS="22,23,80,443,554,1883,502,1900,3702,5000,5353,8080,8443,8883,47808"
+
+case "$MODE" in
+    quick|--quick|-q)
+        echo "[*] IoT Quick Scan: $TARGET"
+        echo "[*] Scanning IoT-relevant ports..."
+        nmap -p"$IOT_PORTS" --open -sV --version-intensity 5 \
+            -oN "$LOOT/iot_quick_${TIMESTAMP}.nmap" \
+            "$TARGET"
+        ;;
+    deep|--deep|-d)
+        echo "[*] IoT Deep Scan: $TARGET"
+        echo "[*] All ports + version detection + default scripts"
+        nmap -p- -sV -sC --version-intensity 5 \
+            -oN "$LOOT/iot_deep_${TIMESTAMP}.nmap" \
+            "$TARGET"
+        ;;
+    cameras|--cameras|-c)
+        echo "[*] IoT Camera Scan: $TARGET"
+        echo "[*] Scanning RTSP, HTTP webcam, and ONVIF ports..."
+        nmap -p80,443,554,8554,8080,8443,3702 -sV --open \
+            --script=http-title,rtsp-methods \
+            -oN "$LOOT/iot_cameras_${TIMESTAMP}.nmap" \
+            "$TARGET"
+        ;;
+    bacnet|--bacnet|-b)
+        echo "[*] BACnet Scan: $TARGET"
+        echo "[*] Scanning BACnet/IP (UDP 47808)..."
+        # BACnet uses UDP, so we need -sU
+        nmap -sU -p47808 -sV \
+            --script=bacnet-info \
+            -oN "$LOOT/iot_bacnet_${TIMESTAMP}.nmap" \
+            "$TARGET" 2>/dev/null || \
+        echo "[!] BACnet script not available — run: nmap --script-updatedb"
+        ;;
+    modbus|--modbus|-m)
+        echo "[*] Modbus/TCP Scan: $TARGET"
+        echo "[*] Scanning Modbus (TCP 502)..."
+        nmap -p502 -sV --script=modbus-discover \
+            -oN "$LOOT/iot_modbus_${TIMESTAMP}.nmap" \
+            "$TARGET" 2>/dev/null || \
+        echo "[!] Modbus script not available — run: nmap --script-updatedb"
+        ;;
+    *)
+        echo "[!] Unknown mode: $MODE"
+        echo "Available: quick, deep, cameras, bacnet, modbus"
+        exit 1
+        ;;
+esac
+
+echo "[+] Results saved to $LOOT/"

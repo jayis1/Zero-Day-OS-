@@ -1,4 +1,5 @@
 #!/bin/bash -e
+set -euo pipefail
 # stage5/01-opencode/01-run.sh — Install OpenCode
 
 BIN="${ROOTFS_DIR}/usr/local/bin"

@@ -1,4 +1,5 @@
 #!/bin/bash -e
+set -euo pipefail
 # stage4/11-subghz-nfc-tools/01-run.sh — Install Sub-GHz and NFC tools
 
 BIN="${ROOTFS_DIR}/usr/local/bin"
@@ -38,13 +39,13 @@ apt-get install -y --no-install-recommends \
 apt-get install -y --no-install-recommends mfcuk 2>/dev/null || echo "[zeroday] mfcuk not available in repos — build from source if needed"
 
 # Python NFC library
-pip3 install nfcpy 2>/dev/null || echo "[zeroday] nfcpy pip install deferred"
+pip3 install --break-system-packages nfcpy 2>/dev/null || echo "[zeroday] nfcpy pip install deferred"
 
 # Python CC1101 library (SPI Sub-GHz)
-pip3 install cc1101 2>/dev/null || echo "[zeroday] cc1101 pip install deferred"
+pip3 install --break-system-packages cc1101 2>/dev/null || echo "[zeroday] cc1101 pip install deferred"
 
 # RFCat (YardStick One support)
-pip3 install rfcat 2>/dev/null || echo "[zeroday] rfcat pip install deferred"
+pip3 install --break-system-packages rfcat 2>/dev/null || echo "[zeroday] rfcat pip install deferred"
 EOF
 
 # Create NFC config
@@ -63,9 +64,9 @@ KERNEL=="i2c-[0-9]*", MODE="0666"
 SUBSYSTEM=="usb", ATTRS{idVendor}=="072f", ATTRS{idProduct}=="2200", MODE="0666"
 UDEVRULE
 
-# Ensure i2c-dev module loads
-if ! grep -q "i2c-dev" "${ROOTFS_DIR}/etc/modules" 2>/dev/null; then
-    echo "i2c-dev" >> "${ROOTFS_DIR}/etc/modules"
+# Ensure i2c_dev module loads
+if ! grep -q "i2c_dev" "${ROOTFS_DIR}/etc/modules" 2>/dev/null; then
+    echo "i2c_dev" >> "${ROOTFS_DIR}/etc/modules"
 fi
 
 echo "[zeroday] Sub-GHz and NFC tools installed."

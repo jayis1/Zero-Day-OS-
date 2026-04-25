@@ -1,4 +1,5 @@
 #!/bin/bash -e
+set -euo pipefail
 # stage5/03-cleanup/01-run.sh — Final image optimization and cleanup
 
 on_chroot << EOF

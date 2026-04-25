@@ -1,0 +1,97 @@
+#!/bin/bash
+set -euo pipefail
+# /usr/local/bin/mac-rotate
+# On-demand MAC address randomization
+# Usage: mac-rotate [iface] [action]
+# Actions: random (default), restore, status
+
+IFACE="${1:-wlan0}"
+ACTION="${2:-random}"
+
+# Validate interface name (alphanumeric + underscore only)
+if ! echo "$IFACE" | grep -qE '^[a-zA-Z0-9_]+$'; then
+    echo "[!] Invalid interface name: $IFACE"
+    exit 1
+fi
+
+BACKUP_DIR="/opt/cardputer/config/mac-backup"
+mkdir -p "$BACKUP_DIR"
+BACKUP_FILE="$BACKUP_DIR/${IFACE}.mac"
+
+save_original_mac() {
+    if [ ! -f "$BACKUP_FILE" ]; then
+        ORIG_MAC=$(ip -br link show "$IFACE" 2>/dev/null | awk '{print $3}')
+        if [ -n "$ORIG_MAC" ]; then
+            echo "$ORIG_MAC" > "$BACKUP_FILE"
+            echo "[*] Saved original MAC for $IFACE: $ORIG_MAC"
+        fi
+    fi
+}
+
+case "$ACTION" in
+    random|--random|-r)
+        if [ "$(id -u)" -ne 0 ]; then
+            echo "[!] Root required. Run with sudo."
+            exit 1
+        fi
+        if ! ip link show "$IFACE" &>/dev/null; then
+            echo "[!] Interface $IFACE not found"
+            ip -br link show
+            exit 1
+        fi
+        save_original_mac
+        NEW_MAC=$(printf '02:%02x:%02x:%02x:%02x:%02x' $((RANDOM%256)) $((RANDOM%256)) $((RANDOM%256)) $((RANDOM%256)) $((RANDOM%256)))
+        echo "[*] Randomizing MAC on $IFACE..."
+        ip link set dev "$IFACE" down
+        ip link set dev "$IFACE" address "$NEW_MAC"
+        ip link set dev "$IFACE" up
+        echo "[+] MAC set to: $NEW_MAC"
+        echo "[+] Original saved: $BACKUP_FILE"
+        echo "[+] Restore with: mac-rotate $IFACE restore"
+        ;;
+    restore|--restore|-R)
+        if [ "$(id -u)" -ne 0 ]; then
+            echo "[!] Root required. Run with sudo."
+            exit 1
+        fi
+        if [ ! -f "$BACKUP_FILE" ]; then
+            echo "[!] No saved MAC for $IFACE. Cannot restore."
+            exit 1
+        fi
+        ORIG_MAC=$(cat "$BACKUP_FILE")
+        echo "[*] Restoring original MAC on $IFACE..."
+        ip link set dev "$IFACE" down
+        ip link set dev "$IFACE" address "$ORIG_MAC"
+        ip link set dev "$IFACE" up
+        rm -f "$BACKUP_FILE"
+        echo "[+] MAC restored to: $ORIG_MAC"
+        ;;
+    status|--status|-s)
+        CURRENT=$(ip -br link show "$IFACE" 2>/dev/null | awk '{print $3}')
+        if [ -f "$BACKUP_FILE" ]; then
+            ORIG=$(cat "$BACKUP_FILE")
+            echo "[*] Interface:  $IFACE"
+            echo "[*] Current MAC: $CURRENT"
+            echo "[*] Original MAC: $ORIG"
+            echo "[*] Status: RANDOMIZED"
+        else
+            echo "[*] Interface:  $IFACE"
+            echo "[*] Current MAC: $CURRENT"
+            echo "[*] Status: ORIGINAL"
+        fi
+        ;;
+    *)
+        echo "Usage: mac-rotate [iface] [action]"
+        echo ""
+        echo "Actions:"
+        echo "  random   — Randomize MAC (default)"
+        echo "  restore  — Restore original MAC"
+        echo "  status   — Show current MAC status"
+        echo ""
+        echo "Examples:"
+        echo "  mac-rotate wlan0 random    # Randomize wlan0"
+        echo "  mac-rotate wlan1 restore   # Restore wlan1"
+        echo "  mac-rotate wlan0 status    # Check status"
+        exit 1
+        ;;
+esac

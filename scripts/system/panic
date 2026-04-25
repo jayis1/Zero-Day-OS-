@@ -10,11 +10,13 @@ TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')
 echo "[$TIMESTAMP] PANIC TRIGGERED" >> "$PANIC_LOG"
 
 OFFENSIVE_PROCS="aircrack airodump airbase hostapd dnsmasq bettercap nmap
-msfconsole msfvenom nikto whatweb sqlmap kismet hcxdumptool hcxping wifite
+nikto whatweb sqlmap hcxdumptool hcxping wifite
 bt-scan l2ping rfcomm obexftp netcat ncat socat chisel rtl tcpdump
 python3 perl ruby ir-replay ir-brute gatttool obexftp rfcomm
 cam-snap libcamera libcamera-still libcamera-vid
-rtl_power rtl_fm hackrf_transfer"
+rtl_power rtl_fm hackrf_transfer
+john hydra gobuster responder arpspoof dnsspoof ffplay
+wifi-survey-log doh-proxy mac-rotate quick-c2 tunnel-mgr"
 
 echo "[PANIC] Killing offensive processes..."
 for proc in $OFFENSIVE_PROCS; do

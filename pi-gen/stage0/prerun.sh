@@ -24,11 +24,12 @@ if [ ! -d "${ROOTFS_DIR}" ]; then
 	printf -v BOOTSTRAP_STR '%q ' "${BOOTSTRAP_ARGS[@]}"
 
 	# Run debootstrap inside 32-bit personality (armhf compat on amd64 host)
-	if ! setarch linux32 capsh $CAPSH_ARG -- -c "debootstrap $BOOTSTRAP_STR"; then
+	setarch linux32 capsh $CAPSH_ARG -- -c "debootstrap $BOOTSTRAP_STR" || {
+		BOOTSTRAP_EXIT=$?
 		rm -f wget-log*
-		log "debootstrap failed with exit code $?"
+		log "debootstrap failed with exit code ${BOOTSTRAP_EXIT}"
 		false
-	fi
+	}
 
 	rm -f wget-log*
 

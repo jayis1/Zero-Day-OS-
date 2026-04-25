@@ -1,11 +1,12 @@
 #!/bin/bash -e
+set -euo pipefail
 # Install media playback scripts
 
 install -m 755 -d "${ROOTFS_DIR}/usr/local/bin"
 
 cat > "${ROOTFS_DIR}/usr/local/bin/webradio-danish" << 'EOF'
 #!/bin/bash
-# Danish WebRadio via mpv
+# Danish WebRadio via ffplay
 
 STATION=$1
 
@@ -29,16 +30,16 @@ case "${STATION}" in
 esac
 
 echo "Playing ${STATION}..."
-# mpv in background, no video, low cache for quick start
-mpv --no-video --profile=low-latency "${URL}" &
-echo $! > /tmp/webradio.pid
+# ffplay in background, no video, low latency for streaming
+ffplay -nodisp -autoexit -infbuf "${URL}" >/dev/null 2>&1 &
+echo "$!" > /tmp/webradio.pid
 EOF
 
 chmod +x "${ROOTFS_DIR}/usr/local/bin/webradio-danish"
 
 cat > "${ROOTFS_DIR}/usr/local/bin/music-player" << 'EOF'
 #!/bin/bash
-# Local music player via mpv
+# Local music player via ffplay
 
 DIR=${1:-"/opt/cardputer/music"}
 
@@ -47,9 +48,25 @@ if [ ! -d "${DIR}" ]; then
     exit 1
 fi
 
-echo "Playing music from ${DIR}..."
-mpv --no-video --shuffle "${DIR}"/* &
-echo $! > /tmp/music-player.pid
+# Build playlist — ffplay cannot play a directory directly
+AUDIO_FILES=()
+for ext in mp3 flac wav ogg aac m4a; do
+    while IFS= read -r -d '' f; do
+        AUDIO_FILES+=("$f")
+    done < <(find "${DIR}" -maxdepth 1 -name "*.${ext}" -print0 2>/dev/null)
+done
+
+if [ ${#AUDIO_FILES[@]} -eq 0 ]; then
+    echo "No audio files found in ${DIR}"
+    exit 1
+fi
+
+# Shuffle the playlist
+shuffled=$(printf '%s\n' "${AUDIO_FILES[@]}" | shuf)
+
+echo "Playing ${#AUDIO_FILES[@]} tracks from ${DIR}..."
+ffplay -nodisp -autoexit -loglevel quiet ${shuffled} >/dev/null 2>&1 &
+echo "$!" > /tmp/music-player.pid
 EOF
 
 chmod +x "${ROOTFS_DIR}/usr/local/bin/music-player"

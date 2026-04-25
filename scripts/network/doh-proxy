@@ -1,0 +1,189 @@
+#!/bin/bash
+set -euo pipefail
+# /usr/local/bin/doh-proxy
+# On-demand DNS-over-HTTPS proxy
+# Routes DNS queries through HTTPS to evade DNS monitoring
+# Usage: doh-proxy [action] [options]
+# Actions: start, stop, status
+
+DOH_DIR="/opt/cardputer/config/doh"
+DOH_PID="/tmp/doh-proxy.pid"
+DOH_LOG="/opt/cardputer/loot/general/doh-proxy.log"
+
+# Default DoH servers
+DOH_SERVERS="cloudflare:1.1.1.1 google:8.8.8.8 quad9:9.9.9.9"
+
+# Validate server name
+validate_server() {
+    case "$1" in
+        cloudflare) echo "https://1.1.1.1/dns-query" ;;
+        google) echo "https://8.8.8.8/dns-query" ;;
+        quad9) echo "https://9.9.9.9/dns-query" ;;
+        https://*) echo "$1" ;;
+        *)
+            echo "[!] Unknown DoH server: $1"
+            echo "    Available: cloudflare, google, quad9"
+            echo "    Or provide full URL: https://1.1.1.1/dns-query"
+            exit 1
+            ;;
+    esac
+}
+
+mkdir -p "$(dirname "$DOH_LOG")"
+
+case "${1:-help}" in
+    start|--start|-s)
+        if [ "$(id -u)" -ne 0 ]; then
+            echo "[!] Root required. Run with sudo."
+            exit 1
+        fi
+
+        SERVER="${2:-cloudflare}"
+        LISTEN_PORT="${3:-5353}"
+
+        # Validate port
+        if ! echo "$LISTEN_PORT" | grep -qE '^[0-9]{1,5}$' || [ "$LISTEN_PORT" -lt 1 ] || [ "$LISTEN_PORT" -gt 65535 ]; then
+            echo "[!] Invalid port: $LISTEN_PORT (1-65535)"
+            exit 1
+        fi
+
+        DOH_URL=$(validate_server "$SERVER")
+
+        if [ -f "$DOH_PID" ] && kill -0 "$(cat "$DOH_PID")" 2>/dev/null; then
+            echo "[!] DoH proxy already running (PID: $(cat "$DOH_PID"))"
+            echo "    Run: doh-proxy stop"
+            exit 1
+        fi
+
+        echo "[*] Starting DoH proxy..."
+        echo "[*] Server: $SERVER ($DOH_URL)"
+        echo "[*] Listening: 127.0.0.1:$LISTEN_PORT"
+
+        # Use python3 as a simple DNS-over-HTTPS forwarder
+        # Listens on $LISTEN_PORT, forwards to DoH server
+        mkdir -p "$DOH_DIR"
+        cat > "$DOH_DIR/proxy.py" << 'PYEOF'
+#!/usr/bin/env python3
+"""Minimal DNS-over-HTTPS proxy using curl + dnspython"""
+import socket, subprocess, sys, struct, os
+
+LISTEN = sys.argv[1]  # e.g. "5353"
+DOH_URL = sys.argv[2]  # e.g. "https://1.1.1.1/dns-query"
+LOG = sys.argv[3] if len(sys.argv) > 3 else "/dev/null"
+
+def log(msg):
+    try:
+        with open(LOG, "a") as f:
+            f.write(msg + "\n")
+    except: pass
+
+def forward(query_data, src_addr):
+    try:
+        result = subprocess.run(
+            ["curl", "-s", "-H", "Content-Type: application/dns-message",
+             "--data-binary", query_data, DOH_URL],
+            capture_output=True, timeout=10
+        )
+        resp = result.stdout
+        if resp:
+            return resp
+    except Exception as e:
+        log(f"[!] Forward error from {src_addr}: {e}")
+    return None
+
+sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+sock.bind(("127.0.0.1", int(LISTEN)))
+log(f"[*] DoH proxy listening on 127.0.0.1:{LISTEN}")
+
+while True:
+    try:
+        data, addr = sock.recvfrom(4096)
+        log(f"[*] Query from {addr[0]}:{addr[1]} ({len(data)} bytes)")
+        resp = forward(data, addr)
+        if resp:
+            sock.sendto(resp, addr)
+            log(f"[*] Response to {addr[0]}:{addr[1]} ({len(resp)} bytes)")
+    except KeyboardInterrupt:
+        break
+    except Exception as e:
+        log(f"[!] Error: {e}")
+
+sock.close()
+PYEOF
+
+        python3 "$DOH_DIR/proxy.py" "$LISTEN_PORT" "$DOH_URL" "$DOH_LOG" &
+        PROXY_PID=$!
+        echo "$PROXY_PID" > "$DOH_PID"
+
+        # Wait briefly to confirm it started
+        sleep 1
+        if kill -0 "$PROXY_PID" 2>/dev/null; then
+            echo "[+] DoH proxy running (PID: $PROXY_PID)"
+            echo "[+] DNS queries to 127.0.0.1:$LISTEN_PORT will use HTTPS"
+            echo ""
+            echo "[*] To use, update /etc/resolv.conf:"
+            echo "    nameserver 127.0.0.1"
+            echo ""
+            echo "[*] Or use with specific tools:"
+            echo "    nmap --dns-servers 127.0.0.1:$LISTEN_PORT <target>"
+            echo "    dig @127.0.0.1 -p $LISTEN_PORT example.com"
+            echo ""
+            echo "[+] Stop with: doh-proxy stop"
+        else
+            echo "[!] Failed to start DoH proxy"
+            rm -f "$DOH_PID"
+            exit 1
+        fi
+        ;;
+
+    stop|--stop|-S)
+        if [ ! -f "$DOH_PID" ]; then
+            echo "[!] DoH proxy not running"
+            exit 0
+        fi
+        PID=$(cat "$DOH_PID")
+        if kill -0 "$PID" 2>/dev/null; then
+            kill "$PID" 2>/dev/null
+            echo "[+] DoH proxy stopped (PID: $PID)"
+        else
+            echo "[!] Process $PID not found (already stopped?)"
+        fi
+        rm -f "$DOH_PID"
+        ;;
+
+    status|--status|-st)
+        if [ -f "$DOH_PID" ] && kill -0 "$(cat "$DOH_PID")" 2>/dev/null; then
+            echo "[*] DoH proxy running (PID: $(cat "$DOH_PID"))"
+        else
+            echo "[*] DoH proxy not running"
+            rm -f "$DOH_PID" 2>/dev/null
+        fi
+        ;;
+
+    help|--help|-h)
+        echo "Usage: doh-proxy <action> [options]"
+        echo ""
+        echo "Actions:"
+        echo "  start [server] [port]  Start DoH proxy (default: cloudflare, port 5353)"
+        echo "  stop                   Stop DoH proxy"
+        echo "  status                 Check if proxy is running"
+        echo ""
+        echo "Servers:"
+        echo "  cloudflare  — 1.1.1.1 (default)"
+        echo "  google      — 8.8.8.8"
+        echo "  quad9       — 9.9.9.9"
+        echo "  Or provide full URL: https://dns.example.com/dns-query"
+        echo ""
+        echo "Examples:"
+        echo "  doh-proxy start                    # Cloudflare on port 5353"
+        echo "  doh-proxy start google 5354       # Google on port 5354"
+        echo "  doh-proxy stop                     # Stop proxy"
+        exit 1
+        ;;
+
+    *)
+        echo "[!] Unknown action: $1"
+        echo "Run: doh-proxy help"
+        exit 1
+        ;;
+esac

@@ -1,4 +1,4 @@
-IMG_SUFFIX="-zeroday-lite"
-EXPORT_IMAGE="zeroday-os-lite"
-NOOBS_NAME="ZERO-DAY OS"
-NOOBS_DESCRIPTION="Pocket Penetration Testing OS for M5Stack Cardputer Zero"
+IMG_SUFFIX="-cardputer-uncleaned"
+EXPORT_IMAGE="zeroday-os-uncleaned"
+NOOBS_NAME="ZERO-DAY OS (Pre-cleanup)"
+NOOBS_DESCRIPTION="Intermediate image — use -cardputer image instead"

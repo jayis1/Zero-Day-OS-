@@ -1,4 +1,5 @@
 #!/bin/bash -e
+set -euo pipefail
 # stage4/12-meshtastic-tools/01-run.sh — Install Meshtastic mesh networking tools
 
 BIN="${ROOTFS_DIR}/usr/local/bin"
@@ -12,7 +13,7 @@ fi
 
 # Install Meshtastic Python CLI
 on_chroot << EOF
-pip3 install meshtastic 2>/dev/null || echo "[zeroday] meshtastic pip install deferred to first boot"
+pip3 install --break-system-packages meshtastic 2>/dev/null || echo "[zeroday] meshtastic pip install deferred to first boot"
 apt-get install -y --no-install-recommends python3-serial 2>/dev/null || true
 EOF
 

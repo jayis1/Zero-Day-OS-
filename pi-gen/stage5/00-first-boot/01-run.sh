@@ -1,4 +1,5 @@
 #!/bin/bash -e
+set -euo pipefail
 # stage5/00-first-boot/01-run.sh — First boot wizard (runs once on first boot)
 
 # Create first-boot systemd service

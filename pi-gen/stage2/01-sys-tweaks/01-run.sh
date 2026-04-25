@@ -1,4 +1,5 @@
 #!/bin/bash -e
+set -euo pipefail
 # stage2/01-sys-tweaks/01-run.sh — System tweaks
 
 # Set hostname

