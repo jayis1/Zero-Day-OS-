@@ -1,13 +1,22 @@
 #!/bin/bash
+set -euo pipefail
 # /usr/local/bin/wifi-deauth
 # Monitor mode + deauth attack
 # Usage: wifi-deauth <iface> [bssid] [channel]
+
+# ── Input validation ──
+validate_mac() { echo "$1" | grep -qE '^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$' || { echo "[!] Invalid MAC address: $1"; exit 1; }; }
+validate_channel() { echo "$1" | grep -qE '^[0-9]+$' && [ "$1" -ge 1 ] && [ "$1" -le 200 ] || { echo "[!] Invalid channel (1-200): $1"; exit 1; }; }
 
 IFACE="${1:-wlan0}"
 BSSID="$2"
 CHAN="$3"
 LOOT="/opt/cardputer/loot/recon"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+
+# Validate arguments if provided
+[ -n "$BSSID" ] && validate_mac "$BSSID"
+[ -n "$CHAN" ] && validate_channel "$CHAN"
 
 if [ "$(id -u)" -ne 0 ]; then
     echo "[!] Root required."

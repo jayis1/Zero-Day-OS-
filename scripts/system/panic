@@ -1,4 +1,5 @@
 #!/bin/bash
+set -euo pipefail
 # /usr/local/bin/panic
 # ZERO-DAY OS Panic Button
 # Kill all offensive tools, wipe history, sanitize screen
@@ -24,8 +25,9 @@ echo "[PANIC] Wiping traces..."
 history -c 2>/dev/null
 history -w 2>/dev/null
 rm -f ~/.bash_history /root/.bash_history 2>/dev/null
-rm -f /tmp/* 2>/dev/null
-rm -rf /opt/cardputer/loot/recon/* 2>/dev/null
+# Only delete Cardputer temp files, not X11/D-Bus/system sockets
+rm -f /tmp/wifi_* /tmp/captive_* /tmp/mesh_* /tmp/rtl_* /tmp/loot_* 2>/dev/null
+rm -rf /opt/cardputer/loot/*/ 2>/dev/null
 
 echo "[PANIC] Killing tmux sessions..."
 tmux kill-server 2>/dev/null

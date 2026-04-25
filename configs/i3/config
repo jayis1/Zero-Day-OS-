@@ -20,7 +20,7 @@ exec_always --no-startup-id xset s noblank
 exec_always --no-startup-id $term -e cyber_launcher
 
 bindsym $mod+Tab exec --no-startup-id cyber_launcher
-bindsym $mod+p exec --no-startup-id panic
+bindsym $mod+p exec --no-startup-id i3-nagbar -t error -m "PANIC: Kill all offensive tools and wipe traces?" -B "CONFIRM PANIC" "panic"
 bindsym $mod+space exec --no-startup-id stealth-backlight-toggle
 bindsym $mod+Return exec --no-startup-id $term -e tmux new-session -A -s main
 bindsym $mod+q kill
@@ -52,7 +52,7 @@ bindsym $mod+Shift+k move up
 bindsym $mod+Shift+l move right
 
 bindsym $mod+f fullscreen toggle
-bindsym $mod+Split+space toggle
+bindsym $mod+Shift+space toggle
 
 bar {
     mode dock

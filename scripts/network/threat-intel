@@ -1,4 +1,5 @@
 #!/bin/bash
+set -euo pipefail
 # /usr/local/bin/threat-intel
 # Lightweight CVE/CISA KEV threat intelligence lookup
 # No heavy Python dependencies — uses curl + jq against public APIs
@@ -95,11 +96,13 @@ case "$COMMAND" in
         fi
 
         if command -v jq &>/dev/null; then
-            MATCHES=$(jq -r "[.vulnerabilities[] | select(.vulnerabilityName | test(\"$KEYWORD\"; \"i\")) or select(.cveID | test(\"$KEYWORD\"; \"i\")) or select(.product | test(\"$KEYWORD\"; \"i\"))] | length" "$KEV_FILE" 2>/dev/null)
+            # Escape keyword for safe use in jq test() expression
+            KEYWORD_ESCAPED=$(printf '%s' "$KEYWORD" | jq -Rs '.')
+            MATCHES=$(jq -r "[.vulnerabilities[] | select(.vulnerabilityName | test(${KEYWORD_ESCAPED}; \"i\")) or select(.cveID | test(${KEYWORD_ESCAPED}; \"i\")) or select(.product | test(${KEYWORD_ESCAPED}; \"i\"))] | length" "$KEV_FILE" 2>/dev/null)
             echo "[+] Found $MATCHES matching vulnerabilities"
             echo ""
 
-            jq -r ".vulnerabilities[] | select(.vulnerabilityName | test(\"$KEYWORD\"; \"i\")) or select(.cveID | test(\"$KEYWORD\"; \"i\")) or select(.product | test(\"$KEYWORD\"; \"i\")) | \"\(.cveID) | \(.vulnerabilityName) | \(.product) | \(.severity) | \(.dateAdded)\"" "$KEV_FILE" 2>/dev/null | head -30
+            jq -r ".vulnerabilities[] | select(.vulnerabilityName | test(${KEYWORD_ESCAPED}; \"i\")) or select(.cveID | test(${KEYWORD_ESCAPED}; \"i\")) or select(.product | test(${KEYWORD_ESCAPED}; \"i\")) | \"\(.cveID) | \(.vulnerabilityName) | \(.product) | \(.severity) | \(.dateAdded)\"" "$KEV_FILE" 2>/dev/null | head -30
 
             echo ""
             echo "[*] Showing first 30 results. Use 'threat-intel cve <ID>' for details."
@@ -124,8 +127,9 @@ case "$COMMAND" in
         # Search CISA KEV
         KEV_FILE="${LOOT}/cisa_kev_catalog.json"
         if [ -f "$KEV_FILE" ] && command -v jq &>/dev/null; then
+            SERVICE_ESCAPED=$(printf '%s' "$SERVICE" | jq -Rs '.')
             echo "=== CISA Known Exploited Vulnerabilities ==="
-            jq -r ".vulnerabilities[] | select(.product | test(\"$SERVICE\"; \"i\")) | \"\(.cveID) | \(.vulnerabilityName) | \(.severity)\"" "$KEV_FILE" 2>/dev/null | head -20
+            jq -r ".vulnerabilities[] | select(.product | test(${SERVICE_ESCAPED}; \"i\")) | \"\(.cveID) | \(.vulnerabilityName) | \(.severity)\"" "$KEV_FILE" 2>/dev/null | head -20
             echo ""
         fi
 

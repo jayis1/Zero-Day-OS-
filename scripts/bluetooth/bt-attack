@@ -1,4 +1,5 @@
 #!/bin/bash
+set -euo pipefail
 # /usr/local/bin/bt-attack
 # Bluetooth attack toolkit
 # Usage: bt-attack <type> [mac]
@@ -6,6 +7,9 @@
 
 ATYPE="$1"
 MAC="$2"
+
+# ── Input validation ──
+validate_mac() { echo "$1" | grep -qE '^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$' || { echo "[!] Invalid MAC address: $1"; exit 1; }; }
 
 if [ -z "$ATYPE" ]; then
     echo "Usage: bt-attack <type> [mac]"
@@ -26,6 +30,13 @@ fi
 rfkill unblock bluetooth 2>/dev/null
 HCI=$(hciconfig | grep -oP 'hci\d+' | head -1)
 hciconfig "$HCI" up 2>/dev/null
+
+# Validate MAC when required
+case "$ATYPE" in
+    blueborne|l2ping_flood|rfcomm_scan)
+        [ -n "$MAC" ] && validate_mac "$MAC"
+        ;;
+esac
 
 case "$ATYPE" in
     blueborne)

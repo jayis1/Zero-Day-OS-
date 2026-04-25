@@ -1,4 +1,5 @@
 #!/bin/bash
+set -euo pipefail
 # /usr/local/bin/mesh-setup
 # Meshtastic mesh network setup for off-grid C2
 # Uses LoRa modules connected to the Expansion Port (HY2.0-4P Grove)

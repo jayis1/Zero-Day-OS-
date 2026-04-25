@@ -1,4 +1,5 @@
 #!/bin/bash
+set -euo pipefail
 # /usr/local/bin/subghz-scan
 # Scan sub-GHz radio frequencies via CC1101 module on the expansion port
 # Supports 300-928MHz (region-dependent)
@@ -62,7 +63,7 @@ if command -v rtl_433 &>/dev/null; then
             ;;
     esac
 
-elif command -v universaltokkit &>/dev/null; then
+elif command -v urh &>/dev/null; then
     echo "[*] Using Universal Radio Hacker..."
     echo "[!] rtl_433 not found. Install with: apt install rtl-433"
 

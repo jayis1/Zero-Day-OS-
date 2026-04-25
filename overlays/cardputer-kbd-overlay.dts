@@ -33,25 +33,28 @@
                              &gpio 9 0 &gpio 10 0 &gpio 11 0 &gpio 12 0>;
                 col-gpios = <&gpio 13 0 &gpio 14 0 &gpio 15 0 &gpio 16 0
                              &gpio 17 0 &gpio 18 0 &gpio 19 0 &gpio 20 0>;
+                // linux,keymap: raw 32-bit values (row<<24 | col<<16 | key_code)
+                // KEY_Q=16 KEY_W=17 KEY_E=18 KEY_R=19 KEY_T=20 KEY_Y=21 KEY_U=22 KEY_I=23
+                // KEY_A=30 KEY_S=31 KEY_D=32 KEY_F=33 KEY_G=34 KEY_H=35 KEY_J=36 KEY_K=37
+                // KEY_Z=44 KEY_X=45 KEY_C=46 KEY_V=47 KEY_B=48 KEY_N=49 KEY_M=50 KEY_COMMA=51
+                // KEY_1=2 KEY_2=3 KEY_3=4 KEY_4=5 KEY_5=6 KEY_6=7 KEY_7=8 KEY_8=9
+                // KEY_9=10 KEY_0=11 KEY_ENTER=28 KEY_BACKSPACE=14
+                // KEY_TAB=15 KEY_SPACE=57 KEY_LEFTALT=56 KEY_LEFTSHIFT=42
+                // KEY_LEFT=105 KEY_RIGHT=106 KEY_DOWN=108 KEY_UP=103
+                // KEY_ESC=1 KEY_P=25 KEY_O=24 KEY_L=38
                 linux,keymap = <
-                    // Row 0
-                    0x0000 KEY_Q  0x0100 KEY_W  0x0200 KEY_E  0x0300 KEY_R
-                    0x0400 KEY_T  0x0500 KEY_Y  0x0600 KEY_U  0x0700 KEY_I
-                    // Row 1
-                    0x0001 KEY_A  0x0101 KEY_S  0x0201 KEY_D  0x0301 KEY_F
-                    0x0401 KEY_G  0x0501 KEY_H  0x0601 KEY_J  0x0701 KEY_K
-                    // Row 2
-                    0x0002 KEY_Z  0x0102 KEY_X  0x0202 KEY_C  0x0302 KEY_V
-                    0x0402 KEY_B  0x0502 KEY_N  0x0602 KEY_M  0x0702 KEY_COMMA
-                    // Row 3
-                    0x0003 KEY_1  0x0103 KEY_2  0x0203 KEY_3  0x0303 KEY_4
-                    0x0403 KEY_5  0x0503 KEY_6  0x0603 KEY_7  0x0703 KEY_8
-                    // Row 4
-                    0x0004 KEY_9  0x0104 KEY_0  0x0204 KEY_ENTER 0x0304 KEY_BACKSPACE
-                    0x0404 KEY_TAB 0x0504 KEY_SPACE 0x0604 KEY_LEFTALT 0x0704 KEY_LEFTSHIFT
-                    // Row 5
-                    0x0005 KEY_LEFT 0x0105 KEY_RIGHT 0x0205 KEY_DOWN 0x0305 KEY_UP
-                    0x0405 KEY_ESC 0x0505 KEY_P  0x0605 KEY_O  0x0705 KEY_L
+                    /* Row 0 */          0x00000010 0x00010011 0x00020012 0x00030013
+                                        0x00040014 0x00050015 0x00060016 0x00070017
+                    /* Row 1 */          0x0000001e 0x0001001f 0x00020020 0x00030021
+                                        0x00040022 0x00050023 0x00060024 0x00070025
+                    /* Row 2 */          0x0000002c 0x0001002d 0x0002002e 0x0003002f
+                                        0x00040030 0x00050031 0x00060032 0x00070033
+                    /* Row 3 */          0x00000002 0x00010003 0x00020004 0x00030005
+                                        0x00040006 0x00050007 0x00060008 0x00070009
+                    /* Row 4 */          0x0000000a 0x0001000b 0x0002001c 0x0003000e
+                                        0x0004000f 0x00050039 0x00060038 0x0007002a
+                    /* Row 5 */          0x00000069 0x0001006a 0x0002006c 0x00030067
+                                        0x00040001 0x00050019 0x00060018 0x00070026
                 >;
                 gpio-activelow;
                 debounce-delay-ms = <5>;

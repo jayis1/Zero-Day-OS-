@@ -1,5 +1,6 @@
 // ST7789v3 LCD Display Overlay for Cardputer Zero
 // NOTE: GPIO pin assignments are PLACEHOLDERS pending M5Stack pinout
+// Uses DRM panel driver (not fbtft, which was removed from mainline)
 /dts-v1/;
 /plugin/;
 
@@ -10,17 +11,35 @@
         target = <&spi0>;
         __overlay__ {
             status = "okay";
+
             st7789v3: st7789v3@0 {
                 compatible = "sitronix,st7789v3";
                 reg = <0>;
                 spi-max-frequency = <32000000>;
-                rotate = <90>;
-                buswidth = <8>;
-                dc-gpios = <&gpio 25 0>;   // PLACEHOLDER
+                dc-gpios = <&gpio 25 0>;    // PLACEHOLDER
                 reset-gpios = <&gpio 27 0>; // PLACEHOLDER
-                led-gpios = <&gpio 18 0>;   // PLACEHOLDER
-                fps = <30>;
-                debug = <0>;
+
+                panel-timing {
+                    clock-frequency = <26244000>;
+                    hactive = <320>;
+                    vactive = <170>;
+                    hfront-porch = <8>;
+                    hback-porch = <8>;
+                    hsync-len = <8>;
+                    vfront-porch = <8>;
+                    vback-porch = <8>;
+                    vsync-len = <8>;
+                    hsync-active = <0>;
+                    vsync-active = <0>;
+                    de-active = <1>;
+                    pixelclk-active = <1>;
+                };
+
+                port {
+                    st7789v3_in: endpoint {
+                        remote-endpoint = <&st7789v3_out>;
+                    };
+                };
             };
         };
     };
@@ -29,6 +48,17 @@
         target = <&spidev0>;
         __overlay__ {
             status = "disabled";
+        };
+    };
+
+    fragment@2 {
+        target-path = "/";
+        __overlay__ {
+            backlight: backlight {
+                compatible = "gpio-backlight";
+                gpios = <&gpio 18 0>; // PLACEHOLDER: backlight GPIO
+                default-on;
+            };
         };
     };
 };

@@ -1,4 +1,5 @@
 #!/bin/bash
+set -euo pipefail
 # /usr/local/bin/revshell-listen
 # Netcat reverse shell listener with session logging
 # Usage: revshell-listen [port]

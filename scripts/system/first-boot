@@ -1,4 +1,5 @@
 #!/bin/bash
+set -euo pipefail
 # /usr/local/bin/first-boot
 # Runs ONCE on first boot, then disables itself
 
@@ -30,10 +31,11 @@ else
 fi
 
 echo ""
-echo "[2/4] Changing passwords..."
-echo "Current root password: zeroday"
-echo "Set a new root password:"
+echo "[2/4] Changing passwords (required)..."
+echo "[!] You must set a new root password:"
 passwd root
+echo "[!] Set password for operator user:"
+passwd operator
 echo ""
 
 echo "Set password for operator user:"

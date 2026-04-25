@@ -39,11 +39,12 @@ btintel
 btrtl
 rfkill
 lirc_dev
-lirc_rpi
 uinput
-g_ether
-g_serial
-libcomposite
+# Note: USB gadget modules (g_ether, g_serial, libcomposite) are NOT loaded
+# statically because they conflict with each other and require configfs setup.
+# They are loaded dynamically by usb-gadget-mode when the user activates them.
+# Note: lirc_rpi does not exist in mainline kernels. Use lirc_dev + ir_gpio_tx/rx
+# device tree overlays instead.
 MODULES
 
 # ── Configure RTC (RX8130CE) ──

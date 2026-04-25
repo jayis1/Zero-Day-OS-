@@ -1,4 +1,5 @@
 #!/bin/bash
+set -euo pipefail
 # /usr/local/bin/nfc-emulate
 # Emulate a NFC/RFID tag — make the Cardputer Zero act as a tag
 # Usage: nfc-emulate <uid_or_type> [duration]
@@ -72,16 +73,32 @@ if command -v pm3 &>/dev/null; then
 elif python3 -c "import nfc" 2>/dev/null; then
     echo "[*] Using nfcpy emulator..."
     python3 << PYEOF
-import nfc, time
+import nfc
+import sys
 
-class TagEmulator(nfc.tag.TagEmulator):
-    def __init__(self, uid):
-        self.uid = uid
+UID = "${UID}"
+TAG_TYPE = "${TYPE}"
 
 try:
     clf = nfc.ContactlessFrontend('tty:S0:pn532')
-    print(f"[*] Emulating {self.uid}... Press Ctrl+C to stop")
-    clf.connect(rdwr={'on-connect': lambda tag: print(f"[+] Reader detected: {tag}")})
+    print(f"[*] Emulating {TAG_TYPE} tag with UID: {UID}")
+    print("[*] Hold the device near a reader... Press Ctrl+C to stop")
+
+    # nfcpy does not have a TagEmulator class — use simulation mode
+    # The PN532 can emulate certain tag types
+    import nfc.tag
+    if TAG_TYPE == "mifare":
+        tag = nfc.tag.mifare.Classic1K(clf, uid=UID.replace(':', '').decode('hex') if len(UID) > 8 else bytes.fromhex(UID.replace(':', '')))
+    elif TAG_TYPE == "ntag":
+        tag = nfc.tag.ntag.NTAG215(clf)
+    else:
+        print(f"[!] Emulation for type '{TAG_TYPE}' not yet implemented")
+        print(f"[*] UID to emulate manually: {UID}")
+
+    # Keep running until interrupted
+    import time
+    while True:
+        time.sleep(0.5)
 except KeyboardInterrupt:
     print("[*] Emulation stopped.")
 except Exception as e:

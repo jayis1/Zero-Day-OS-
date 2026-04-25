@@ -2,8 +2,13 @@
 # stage3/00-configure-base/01-run.sh — ZERO-DAY OS base system configuration
 
 # Set hostname
-echo "zeroday" > "${ROOTFS_DIR}/etc/hostname"
-echo "127.0.1.1  zeroday" >> "${ROOTFS_DIR}/etc/hosts"
+echo "${TARGET_HOSTNAME}" > "${ROOTFS_DIR}/etc/hostname"
+# Overwrite hosts (don't append — debootstrap may have set defaults)
+cat > "${ROOTFS_DIR}/etc/hosts" << EOF
+127.0.0.1 localhost
+127.0.1.1 ${TARGET_HOSTNAME}
+::1       localhost ip6-localhost ip6-loopback
+EOF
 
 # Set root password
 # Generate hash outside chroot and write directly to shadow file

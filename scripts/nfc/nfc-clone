@@ -1,4 +1,5 @@
 #!/bin/bash
+set -euo pipefail
 # /usr/local/bin/nfc-clone
 # Clone a NFC/RFID tag by UID or from a dump file
 # Usage: nfc-clone <uid_or_dump> [output]

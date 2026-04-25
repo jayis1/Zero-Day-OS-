@@ -1,4 +1,5 @@
 #!/bin/bash
+set -euo pipefail
 # /usr/local/bin/cam-ocr
 # Capture image + run Tesseract OCR
 # Usage: cam-ocr [output]

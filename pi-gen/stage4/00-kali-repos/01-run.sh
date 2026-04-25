@@ -15,6 +15,10 @@ Pin: release o=Kali
 Pin-Priority: 50
 EOF
 
+# Note: --force-overwrite is NOT set globally. It is only applied
+# per-package when installing from Kali via apt-get -t kali-rolling.
+# This prevents Kali packages from silently clobbering Debian system files.
+
 # Add Kali GPG key (best-effort — network may be unavailable)
 on_chroot << 'EOF'
 # Download Kali GPG key

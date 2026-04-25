@@ -1,9 +1,6 @@
-# stage0/ files directory
-# The Raspberry Pi GPG keyring must be placed here before building.
-# Download with:
-#   curl -o stage0/files/raspberrypi.gpg https://www.raspberrypi.com/raspberrypi.gpg.key
-# Or export from your system:
-#   gpg --dearmor < /usr/share/keyrings/raspberrypi-archive-keyring.gpg > stage0/files/raspberrypi.gpg
-#
-# If you're building on a system that already has Raspberry Pi OS keys:
-#   cp /usr/share/keyrings/raspberry-pi-archive-keyring.gpg stage0/files/raspberrypi.gpg
+# This file is intentionally empty.
+# stage0/prerun.sh uses --no-check-gpg with debootstrap because
+# the Raspberry Pi GPG key cannot be downloaded inside Docker
+# (Cloudflare protection on raspberrypi.com). The build boots from
+# pure Debian (deb.debian.org) and does not need RPi keys at this stage.
+# RPi packages are handled by stage1/ packages and apt configuration.

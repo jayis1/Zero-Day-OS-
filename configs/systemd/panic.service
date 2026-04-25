@@ -1,10 +1,10 @@
 [Unit]
-Description=ZERO-DAY OS Panic Kill Switch
+Description=ZERO-DAY OS Panic Kill Switch (manual trigger only)
 After=multi-user.target
 
 [Service]
 Type=oneshot
 ExecStart=/usr/local/bin/panic
 
-[Install]
-WantedBy=multi-user.target
+# This service should NOT be started at boot. It is triggered on-demand only.
+# Remove WantedBy so 'systemctl enable' does not create a boot-time symlink.

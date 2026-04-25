@@ -1,4 +1,5 @@
 #!/bin/bash
+set -euo pipefail
 # /usr/local/bin/rf-capture
 # Raw IQ capture from RTL-SDR for offline analysis
 # Saves captured data in a format compatible with GNU Radio, SDR#, inspectrum, etc.
@@ -16,7 +17,18 @@
 FREQ="${1:-433.92}"
 DURATION="${2:-10}"
 SAMPLE_RATE="${3:-2400000}"
+MAX_DURATION=300
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+
+# ── Input validation ──
+if ! echo "$FREQ" | grep -qE '^[0-9]+(\.[0-9]+)?$'; then
+    echo "[!] Invalid frequency: $FREQ"
+    exit 1
+fi
+if ! echo "$DURATION" | grep -qE '^[0-9]+$' || [ "$DURATION" -lt 1 ] || [ "$DURATION" -gt "$MAX_DURATION" ]; then
+    echo "[!] Invalid duration (1-${MAX_DURATION} seconds): $DURATION"
+    exit 1
+fi
 OUTDIR="/opt/cardputer/loot/rf"
 mkdir -p "$OUTDIR"
 

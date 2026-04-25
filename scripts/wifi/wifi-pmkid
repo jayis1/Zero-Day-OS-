@@ -1,4 +1,5 @@
 #!/bin/bash
+set -euo pipefail
 # /usr/local/bin/wifi-pmkid
 # PMKID capture via hcxdumptool (no client needed)
 # Usage: wifi-pmkid <iface> [bssid] [channel]

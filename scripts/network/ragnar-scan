@@ -1,4 +1,5 @@
 #!/bin/bash
+set -euo pipefail
 # /usr/local/bin/ragnar-scan
 # Lightweight autonomous network scanner inspired by Ragnar (https://github.com/PierreGode/Ragnar)
 # Orchestrates ZERO-DAY OS tools in an automated scan loop

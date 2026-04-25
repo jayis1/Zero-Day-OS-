@@ -1,4 +1,5 @@
 #!/bin/bash
+set -euo pipefail
 # /usr/local/bin/cam-stream
 # Record a video clip from IMX219 camera
 # Usage: cam-stream [duration_seconds] [output]
@@ -7,6 +8,12 @@ DURATION="${1:-10}"
 OUTPUT="$2"
 LOOT="/opt/cardputer/loot/cam"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+
+# ── Input validation ──
+if ! echo "$DURATION" | grep -qE '^[0-9]+$' || [ "$DURATION" -lt 1 ] || [ "$DURATION" -gt 3600 ]; then
+    echo "[!] Invalid duration (1-3600 seconds): $DURATION"
+    exit 1
+fi
 
 mkdir -p "$LOOT"
 [ -z "$OUTPUT" ] && OUTPUT="$LOOT/stream_${TIMESTAMP}.mp4"

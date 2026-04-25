@@ -1,4 +1,5 @@
 #!/bin/bash
+set -euo pipefail
 # /usr/local/bin/cardputer-wifi-setup
 # Interactive WiFi configuration utility
 # Usage: cardputer-wifi-setup
@@ -56,13 +57,20 @@ network={
 EOF
 else
     echo "[*] Configuring WPA2 network..."
-    WPA_HASH=$(wpa_passphrase "$SSID" "$PSK" | grep -E '^\s+psk=' | head -1 | awk '{print $1}' | tr -d 'psk=')
+    WPA_HASH=$(wpa_passphrase "$SSID" "$PSK" | grep 'psk=' | tail -1 | sed 's/.*psk=//;s/[[:space:]]*//')
+    # Validate hash is 64 hex chars
+    if ! echo "$WPA_HASH" | grep -qE '^[0-9a-f]{64}$'; then
+        # Fallback: use passphrase directly (WPA-PSK supports both)
+        WPA_LINE="psk=\"$PSK\""
+    else
+        WPA_LINE="psk=$WPA_HASH"
+    fi
 
     cat >> "$WPA_CONF" << EOF
 
 network={
     ssid="$SSID"
-    psk=$WPA_HASH
+    $WPA_LINE
     key_mgmt=WPA-PSK
 }
 EOF

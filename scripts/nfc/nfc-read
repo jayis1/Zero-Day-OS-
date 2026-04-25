@@ -1,4 +1,5 @@
 #!/bin/bash
+set -euo pipefail
 # /usr/local/bin/nfc-read
 # Read NFC/RFID tags via PN532 module on the expansion port
 # Usage: nfc-read [output]

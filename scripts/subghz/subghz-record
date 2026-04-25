@@ -1,4 +1,5 @@
 #!/bin/bash
+set -euo pipefail
 # /usr/local/bin/subghz-record
 # Record Sub-GHz radio signals from remotes, key fobs, garage doors
 # Usage: subghz-record <frequency_mhz> [duration_seconds] [output]
@@ -53,8 +54,8 @@ PYEOF
 
 elif command -v rtl_433 &>/dev/null; then
     echo "[*] Using RTL-SDR to capture at ${FREQ}MHz..."
-    rtl_433 -f "${FREQ}e6" -s 1024000 -T "$DURATION" -F json -T "$DURATION" \
-        -F json "$LOOT/subghz_rtl_${TIMESTAMP}.json" 2>/dev/null
+    rtl_433 -f "${FREQ}e6" -s 1024000 -T "$DURATION" \
+        -F "json:${LOOT}/subghz_rtl_${TIMESTAMP}.json" 2>/dev/null
     echo "[+] Captured to $LOOT/subghz_rtl_${TIMESTAMP}.json"
 
 else

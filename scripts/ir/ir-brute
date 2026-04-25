@@ -1,4 +1,5 @@
 #!/bin/bash
+set -euo pipefail
 # /usr/local/bin/ir-brute
 # Brute-force IR power codes for TVs, ACs, projectors
 # Usage: ir-brute <protocol> [device]
@@ -78,9 +79,12 @@ while read -r vendor cmd; do
     COUNT=$((COUNT + 1))
     printf "\r[*] Sending code %d/%d: vendor=%s cmd=%s      " "$COUNT" "$TOTAL" "$vendor" "$cmd"
 
-    irsend SEND_ONCE "$PROTOCOL:$DEVICE" "$cmd" 2>/dev/null || {
-        mode2 -d "$LIRC_DEV" <<< "pulse 9000 space 4500 pulse 560 space 560 pulse 560 space 1690" 2>/dev/null
-    }
+    if irsend SEND_ONCE "$PROTOCOL:$DEVICE" "$cmd" 2>/dev/null; then
+        : # sent successfully
+    else
+        # irsend failed — skip this code
+        : # irsend may fail if lircd is not configured for this protocol
+    fi
 
     sleep 0.3
 done <<< "$COMMANDS"

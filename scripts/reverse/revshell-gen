@@ -1,4 +1,5 @@
 #!/bin/bash
+set -euo pipefail
 # /usr/local/bin/revshell-gen
 # Generate reverse shell one-liners
 # Usage: revshell-gen <type> <ip> [port]

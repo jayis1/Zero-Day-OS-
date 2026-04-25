@@ -1,4 +1,5 @@
 #!/bin/bash
+set -euo pipefail
 # /usr/local/bin/zeroday-bootanim
 # Boot animation for ZERO-DAY OS — glitch ASCII art on ST7789v3 LCD
 # Plays during boot before Xorg/i3 launches

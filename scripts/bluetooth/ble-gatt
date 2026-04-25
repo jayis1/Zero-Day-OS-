@@ -1,4 +1,5 @@
 #!/bin/bash
+set -euo pipefail
 # /usr/local/bin/ble-gatt
 # BLE GATT service and characteristic enumeration
 # Usage: ble-gatt <mac>

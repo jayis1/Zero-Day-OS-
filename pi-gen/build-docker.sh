@@ -154,6 +154,7 @@ time ${DOCKER} run \
   --privileged \
   ${PIGEN_DOCKER_OPTS} \
   --volume "${CONFIG_FILE}":/config:ro \
+  --volume "${DIR}/../tui":/tui:ro \
   -e "GIT_HASH=${GIT_HASH}" \
   $DOCKER_CMDLINE_POST \
   pi-gen \
