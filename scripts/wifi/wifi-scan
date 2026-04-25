@@ -1,0 +1,69 @@
+#!/bin/bash
+# /usr/local/bin/wifi-scan
+# Quick WiFi network survey
+# Usage: wifi-scan [iface]
+
+IFACE="${1:-wlan0}"
+LOOT="/opt/cardputer/loot/recon"
+TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+
+mkdir -p "$LOOT"
+
+echo "[*] WiFi Network Scanner — ZERO-DAY OS"
+echo "[*] Interface: $IFACE"
+echo ""
+
+if ! ip link show "$IFACE" &>/dev/null; then
+    echo "[!] Interface $IFACE not found"
+    echo "[*] Available interfaces:"
+    ip -br link show
+    exit 1
+fi
+
+if [ "$(id -u)" -ne 0 ]; then
+    echo "[!] Root required. Run with sudo."
+    exit 1
+fi
+
+if iw dev "$IFACE" type 2>/dev/null | grep -q "monitor"; then
+    echo "[!] Interface is in monitor mode. Switching to managed..."
+    ip link set "$IFACE" down
+    iw dev "$IFACE" set type managed
+    ip link set "$IFACE" up
+    sleep 2
+fi
+
+rfkill unblock wifi 2>/dev/null
+ip link set "$IFACE" up
+sleep 2
+
+echo "[*] Scanning for networks (10 seconds)..."
+echo "[*] SSID                              BSSID              CH  ENC       SIGNAL"
+echo "[*] ─────────────────────────────────────────────────────────────────────────"
+
+OUTFILE="$LOOT/wifi_scan_${TIMESTAMP}.csv"
+ iw dev "$IFACE" scan 2>/dev/null | awk -v out="$OUTFILE" '
+    BEGIN { FS="\n"; ssid=""; bssid=""; freq=""; enc=""; signal="" }
+    /BSS/ { if (bssid != "") {
+        ch = freq <= 2484 ? (freq - 2407) / 5 : (freq - 5000) / 5
+        printf "    %-33s %-18s %-3d %-10s %s dBm\n", ssid, bssid, ch, enc, signal
+        printf "%s,%s,%d,%s,%s\n", ssid, bssid, ch, enc, signal >> out
+    }}
+    /BSS/ { bssid=$0; sub(/.*BSS /, "", bssid); sub(/\).*/, "", bssid) }
+    /SSID:/ { ssid=$0; sub(/.*SSID: /, "", ssid) }
+    /freq:/ { freq=$0; sub(/.*freq: /, "", freq); sub(/ .*/, "", freq) }
+    /signal:/ { signal=$0; sub(/.*signal: /, "", signal); sub(/ .*/, "", signal) }
+    /capability/ { enc="WPA2" }
+    /RSN/ { enc="WPA2" }
+    /WPA/ { enc="WPA" }
+    /capability.*Privacy/ { enc="WEP" }
+    /capability/ && !/Privacy/ && !/WPA/ && !/RSN/ { enc="OPEN" }
+    END { if (bssid != "") {
+        ch = freq <= 2484 ? (freq - 2407) / 5 : (freq - 5000) / 5
+        printf "    %-33s %-18s %-3d %-10s %s dBm\n", ssid, bssid, ch, enc, signal
+    }}
+'
+
+echo ""
+echo "[*] Results saved to $OUTFILE"
+echo "[*] Capture handshake: wifi-handshake $IFACE <BSSID> <CHANNEL>"

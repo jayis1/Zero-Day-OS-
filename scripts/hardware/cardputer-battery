@@ -1,0 +1,70 @@
+#!/bin/bash
+# /usr/local/bin/cardputer-battery
+# Read BQ27220 fuel gauge — voltage, capacity, time remaining
+# Usage: cardputer-battery [--profile=<mode>]
+
+POWER="/sys/class/power_supply"
+
+echo "[*] ZERO-DAY OS — Battery Status"
+echo ""
+
+BATT_DIR=$(find "$POWER" -maxdepth 1 -name "*bq27*" -o -name "*battery*" | head -1)
+
+if [ -z "$BATT_DIR" ]; then
+    echo "[!] No battery fuel gauge found"
+    echo "[*] Checking /sys/class/power_supply/..."
+    ls -la "$POWER/" 2>/dev/null
+    exit 1
+fi
+
+CAPACITY=$(cat "$BATT_DIR/capacity" 2>/dev/null || echo "?")
+VOLTAGE=$(cat "$BATT_DIR/voltage_now" 2>/dev/null || echo "?")
+CURRENT=$(cat "$BATT_DIR/current_now" 2>/dev/null || echo "?")
+STATUS=$(cat "$BATT_DIR/status" 2>/dev/null || echo "?")
+TEMP=$(cat "$BATT_DIR/temp" 2>/dev/null || echo "?")
+HEALTH=$(cat "$BATT_DIR/health" 2>/dev/null || echo "?")
+TECH=$(cat "$BATT_DIR/technology" 2>/dev/null || echo "?")
+
+if [ "$VOLTAGE" != "?" ]; then
+    VOLTAGE_MV=$(echo "$VOLTAGE / 1000" | bc -l 2>/dev/null || echo "$VOLTAGE")
+    VOLTAGE_V=$(echo "scale=3; $VOLTAGE / 1000000" | bc -l 2>/dev/null || echo "${VOLTAGE_MV}mV")
+fi
+
+if [ "$CURRENT" != "?" ]; then
+    CURRENT_MA=$(echo "$CURRENT / 1000" | bc -l 2>/dev/null || echo "$CURRENT")
+fi
+
+if [ "$TEMP" != "?" ]; then
+    TEMP_C=$(echo "scale=1; $TEMP / 10" | bc -l 2>/dev/null || echo "$TEMP")
+fi
+
+echo "  Status:      $STATUS"
+echo "  Capacity:    ${CAPACITY}%"
+echo "  Voltage:     ${VOLTAGE_V}V"
+echo "  Current:     ${CURRENT_MA}mA"
+echo "  Temperature: ${TEMP_C}°C"
+echo "  Health:      $HEALTH"
+echo "  Chemistry:   $TECH"
+echo ""
+
+if [ "$STATUS" = "Charging" ]; then
+    TIME=$(cat "$BATT_DIR/time_to_full_now" 2>/dev/null || echo "?")
+    if [ "$TIME" != "?" ]; then
+        HOURS=$(echo "$TIME / 3600" | bc 2>/dev/null || echo "?")
+        MINS=$(echo "$TIME % 3600 / 60" | bc 2>/dev/null || echo "?")
+        echo "  Time to full: ${HOURS}h ${MINS}m"
+    fi
+elif [ "$STATUS" = "Discharging" ]; then
+    TIME=$(cat "$BATT_DIR/time_to_empty_now" 2>/dev/null || echo "?")
+    if [ "$TIME" != "?" ]; then
+        HOURS=$(echo "$TIME / 3600" | bc 2>/dev/null || echo "?")
+        MINS=$(echo "$TIME % 3600 / 60" | bc 2>/dev/null || echo "?")
+        echo "  Time remaining: ${HOURS}h ${MINS}m"
+    fi
+fi
+
+BARS=$(echo "scale=0; $CAPACITY / 10" | bc 2>/dev/null || echo "?")
+FILLED=$(printf '█%.0s' $(seq 1 "$BARS" 2>/dev/null) 2>/dev/null)
+EMPTY=$(printf '░%.0s' $(seq 1 $((10 - BARS)) 2>/dev/null) 2>/dev/null)
+echo ""
+echo "  [${FILLED}${EMPTY}] ${CAPACITY}%"

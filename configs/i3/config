@@ -1,0 +1,71 @@
+# /etc/i3/config — ZERO-DAY OS
+# Omni-Key system: Fn maps to Alt (Mod1) for all keybindings
+
+set $mod Mod1
+set $term st
+font pango:Terminus 8
+default_border none
+default_floating_border none
+hide_edge_borders both
+focus_follows_mouse no
+workspace_layout default
+popup_during_fullscreen smart
+
+for_window [class=".*"] fullscreen enable
+
+exec_always --no-startup-id xset s off
+exec_always --no-startup-id xset -dpms
+exec_always --no-startup-id xset s noblank
+
+exec_always --no-startup-id $term -e cyber_launcher
+
+bindsym $mod+Tab exec --no-startup-id cyber_launcher
+bindsym $mod+p exec --no-startup-id panic
+bindsym $mod+space exec --no-startup-id stealth-backlight-toggle
+bindsym $mod+Return exec --no-startup-id $term -e tmux new-session -A -s main
+bindsym $mod+q kill
+bindsym $mod+o exec --no-startup-id opencode-session
+bindsym $mod+Shift+q exec --no-startup-id i3-nagbar -t warning -m "Press Shift+q again to exit i3" -B "Exit" "i3-msg exit"
+
+bindsym $mod+n exec --no-startup-id $term -e bash -c "sudo net-quickscan; bash"
+bindsym $mod+b exec --no-startup-id $term -e bash -c "sudo bt-scan; bash"
+bindsym $mod+s exec --no-startup-id $term -e bash -c "revshell-listen; bash"
+bindsym $mod+w exec --no-startup-id cardputer-wifi-toggle
+bindsym $mod+c exec --no-startup-id cam-snap
+bindsym $mod+i exec --no-startup-id $term -e bash -c "sudo ir-scan; bash"
+bindsym $mod+a exec --no-startup-id $term -e bash -c "opencode; bash"
+bindsym $mod+d exec --no-startup-id $term -e bash -c "dongle-setup status; bash"
+
+bindsym $mod+1 workspace 1
+bindsym $mod+2 workspace 2
+bindsym $mod+3 workspace 3
+bindsym $mod+4 workspace 4
+
+bindsym $mod+h focus left
+bindsym $mod+j focus down
+bindsym $mod+k focus up
+bindsym $mod+l focus right
+
+bindsym $mod+Shift+h move left
+bindsym $mod+Shift+j move down
+bindsym $mod+Shift+k move up
+bindsym $mod+Shift+l move right
+
+bindsym $mod+f fullscreen toggle
+bindsym $mod+Split+space toggle
+
+bar {
+    mode dock
+    position bottom
+    height 10
+    font pango:Terminus 6
+    status_command i3status
+    colors {
+        background #000000
+        statusline #00ff41
+        focused_workspace #1a1a2e #00ff41 #0a0a0a
+        active_workspace #0a0a0a #1a1a2e #00ff41
+        inactive_workspace #0a0a0a #0a0a0a #333333
+        urgent_workspace #ff0000 #ffffff #000000
+    }
+}

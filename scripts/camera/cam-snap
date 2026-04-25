@@ -1,0 +1,40 @@
+#!/bin/bash
+# /usr/local/bin/cam-snap
+# Capture a still image from IMX219 camera
+# Usage: cam-snap [output]
+
+OUTPUT="${1:-}"
+LOOT="/opt/cardputer/loot/cam"
+TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+
+mkdir -p "$LOOT"
+[ -z "$OUTPUT" ] && OUTPUT="$LOOT/snap_${TIMESTAMP}.jpg"
+
+echo "[*] ZERO-DAY OS — Camera Snap"
+echo ""
+
+if [ -e "/dev/video0" ]; then
+    echo "[*] Capturing image from /dev/video0..."
+
+    if command -v libcamera-still &>/dev/null; then
+        libcamera-still -o "$OUTPUT" --timeout 1000 --width 1920 --height 1080 2>/dev/null
+    elif command -v fswebcam &>/dev/null; then
+        fswebcam -r 1920x1080 --no-banner "$OUTPUT" 2>/dev/null
+    elif command -v raspistill &>/dev/null; then
+        raspistill -o "$OUTPUT" -w 1920 -h 1080 -t 1000 2>/dev/null
+    else
+        echo "[!] No camera capture tool found (libcamera-still, fswebcam, raspistill)"
+        exit 1
+    fi
+
+    if [ -f "$OUTPUT" ]; then
+        SIZE=$(du -h "$OUTPUT" | awk '{print $1}')
+        echo "[+] Image captured: $OUTPUT ($SIZE)"
+        echo "[*] OCR: cam-ocr $OUTPUT"
+    else
+        echo "[!] Capture failed"
+    fi
+else
+    echo "[!] /dev/video0 not found"
+    echo "[!] Enable camera overlay: dtoverlay=imx219"
+fi

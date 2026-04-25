@@ -1,0 +1,59 @@
+#!/bin/bash
+# /usr/local/bin/ir-scan
+# Capture and decode IR signals from remotes
+# Usage: ir-scan [output]
+
+OUTPUT="${1:-}"
+LOOT="/opt/cardputer/loot/ir"
+TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+
+if [ "$(id -u)" -ne 0 ]; then
+    echo "[!] Root required."
+    exit 1
+fi
+
+mkdir -p "$LOOT"
+[ -z "$OUTPUT" ] && OUTPUT="$LOOT/ir_capture_${TIMESTAMP}.raw"
+
+echo "[*] ZERO-DAY OS — IR Signal Scanner"
+echo "[*] Point an IR remote at the Cardputer Zero IR receiver"
+echo "[*] Press buttons on the remote to capture their signals"
+echo "[*] Press Ctrl+C to stop"
+echo ""
+
+LIRC_DEV="/dev/lirc0"
+MODE2_DEV="/sys/class/lirc/lirc0"
+
+if [ -e "$LIRC_DEV" ]; then
+    echo "[*] Using lirc device: $LIRC_DEV"
+    echo "[*] Capturing raw IR signals..."
+    timeout 30 mode2 -d "$LIRC_DEV" | tee "$OUTPUT"
+    RESULT=$?
+    if [ $RESULT -eq 0 ] && [ -s "$OUTPUT" ]; then
+        echo ""
+        echo "[+] IR signal captured: $OUTPUT"
+
+        DECODED="${OUTPUT%.raw}. decoded"
+        mode2 -d "$LIRC_DEV" < "$OUTPUT" > "$DECODED" 2>/dev/null || true
+        echo "[*] Replay with: ir-replay $OUTPUT"
+        echo "[*] Brute force: ir-brute <protocol> [device]"
+    else
+        echo "[!] No IR signal received. Make sure:"
+        echo "    - IR device is enabled (check /sys/class/lirc/)"
+        echo "    - Remote is pointed at the IR receiver"
+        echo "    - Try: dtoverlay=ir-trx in /boot/config.txt"
+    fi
+else
+    echo "[*] lirc0 not found, trying raw GPIO capture..."
+    echo "[*] Looking for GPIO-attached IR receiver..."
+
+    GPIO_IR=$(grep -r "ir_rx" /sys/class/gpio/ 2>/dev/null || echo "")
+    if [ -n "$GPIO_IR" ]; then
+        echo "[*] Found GPIO IR receiver"
+        echo "[*] Raw capture not yet supported. Use lirc overlay."
+    else
+        echo "[!] No IR receiver found."
+        echo "[!] Ensure IR transceiver overlay is enabled:"
+        echo "    dtoverlay=ir-trx in /boot/config.txt"
+    fi
+fi

@@ -1,0 +1,19 @@
+// RX8130CE RTC Overlay for Cardputer Zero
+// NOTE: I2C address is PLACEHOLDER pending M5Stack pinout
+/dts-v1/;
+/plugin/;
+
+/ {
+    compatible = "brcm,bcm2837";
+
+    fragment@0 {
+        target = <&i2c1>;
+        __overlay__ {
+            status = "okay";
+            rx8130ce: rx8130ce@32 {
+                compatible = "epson,rx8130ce";
+                reg = <0x32>;  // PLACEHOLDER I2C address
+            };
+        };
+    };
+};

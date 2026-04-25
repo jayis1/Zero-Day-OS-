@@ -1,0 +1,35 @@
+#!/bin/bash
+# /usr/local/bin/opencode-session
+# tmux split-screen IDE: OpenCode + live console
+# Usage: opencode-session [dir] [filename]
+
+SESSION="opencode"
+WORKSPACE="/opt/cardputer/workspace"
+
+mkdir -p "$WORKSPACE"
+
+if tmux has-session -t "$SESSION" 2>/dev/null; then
+    tmux attach -t "$SESSION"
+    exit 0
+fi
+
+DIR="${1:-$WORKSPACE}"
+FILE="$2"
+
+cd "$DIR" || exit 1
+
+tmux new-session -d -s "$SESSION" -c "$DIR"
+
+tmux split-window -v -p 30 -t "$SESSION" -c "$DIR"
+
+if [ -n "$FILE" ] && [ -f "$DIR/$FILE" ]; then
+    tmux send-keys -t "$SESSION:0.0" "opencode $DIR/$FILE" Enter
+else
+    tmux send-keys -t "$SESSION:0.0" "opencode" Enter
+fi
+
+tmux send-keys -t "$SESSION:0.1" "" Enter
+
+tmux select-pane -t "$SESSION:0.0"
+
+tmux attach -t "$SESSION"

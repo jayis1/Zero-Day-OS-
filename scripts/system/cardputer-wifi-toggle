@@ -1,0 +1,36 @@
+#!/bin/bash
+# /usr/local/bin/cardputer-wifi-toggle
+# Toggle wlan0 on/off (saves battery, goes dark)
+# Usage: cardputer-wifi-toggle [iface]
+
+IFACE="${1:-wlan0}"
+
+if [ "$(id -u)" -ne 0 ]; then
+    echo "[!] Root required."
+    exit 1
+fi
+
+if ! ip link show "$IFACE" &>/dev/null; then
+    echo "[!] Interface $IFACE not found"
+    exit 1
+fi
+
+STATE=$(ip link show "$IFACE" | grep -c "UP")
+
+if [ "$STATE" -gt 0 ]; then
+    echo "[*] Bringing $IFACE down..."
+    wpa_cli -i "$IFACE" terminate 2>/dev/null
+    ip link set "$IFACE" down
+    rfkill block wifi 2>/dev/null
+    echo "[+] $IFACE is DOWN"
+    echo "[+] WiFi radio blocked — no RF emissions"
+else
+    echo "[*] Bringing $IFACE up..."
+    rfkill unblock wifi 2>/dev/null
+    ip link set "$IFACE" up
+    wpa_supplicant -B -i "$IFACE" -c /etc/wpa_supplicant/wpa_supplicant.conf 2>/dev/null
+    dhclient "$IFACE" 2>/dev/null
+    echo "[+] $IFACE is UP"
+    IP=$(ip -4 addr show "$IFACE" 2>/dev/null | grep inet | awk '{print $2}')
+    [ -n "$IP" ] && echo "[+] IP: $IP"
+fi

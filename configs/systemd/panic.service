@@ -1,0 +1,10 @@
+[Unit]
+Description=ZERO-DAY OS Panic Kill Switch
+After=multi-user.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/panic
+
+[Install]
+WantedBy=multi-user.target

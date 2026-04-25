@@ -1,0 +1,12 @@
+[Unit]
+Description=ZERO-DAY OS IMU Tamper Detection
+After=multi-user.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/tamper-watch
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

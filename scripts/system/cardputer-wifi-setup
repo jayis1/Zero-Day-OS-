@@ -1,0 +1,88 @@
+#!/bin/bash
+# /usr/local/bin/cardputer-wifi-setup
+# Interactive WiFi configuration utility
+# Usage: cardputer-wifi-setup
+
+WPA_CONF="/etc/wpa_supplicant/wpa_supplicant.conf"
+NETPLAN_DIR="/etc/systemd/network"
+
+echo "[*] ZERO-DAY OS — WiFi Setup"
+echo ""
+
+if [ "$(id -u)" -ne 0 ]; then
+    echo "[!] Root required."
+    exit 1
+fi
+
+rfkill unblock wifi 2>/dev/null
+
+echo "Available WiFi interfaces:"
+iw dev | awk '/Interface/{print "  " $2}'
+echo ""
+
+IFACE=$(iw dev | awk '/Interface/{print $2}' | head -1)
+if [ -z "$IFACE" ]; then
+    echo "[!] No WiFi interface found"
+    exit 1
+fi
+
+echo "[*] Using interface: $IFACE"
+echo ""
+
+echo "[*] Scanning for networks..."
+ip link set "$IFACE" up 2>/dev/null
+iw dev "$IFACE" scan 2>/dev/null | awk '/SSID:/{print "  " $2}' | sort -u | head -20
+echo ""
+
+read -p "[?] Enter SSID: " SSID
+read -s -p "[?] Enter password (hidden): " PSK
+echo ""
+
+if [ -z "$SSID" ]; then
+    echo "[!] SSID cannot be empty"
+    exit 1
+fi
+
+mkdir -p /etc/wpa_supplicant
+
+if [ -z "$PSK" ]; then
+    echo "[*] Configuring open network (no password)..."
+    cat >> "$WPA_CONF" << EOF
+
+network={
+    ssid="$SSID"
+    key_mgmt=NONE
+}
+EOF
+else
+    echo "[*] Configuring WPA2 network..."
+    WPA_HASH=$(wpa_passphrase "$SSID" "$PSK" | grep -E '^\s+psk=' | head -1 | awk '{print $1}' | tr -d 'psk=')
+
+    cat >> "$WPA_CONF" << EOF
+
+network={
+    ssid="$SSID"
+    psk=$WPA_HASH
+    key_mgmt=WPA-PSK
+}
+EOF
+fi
+
+echo "[*] Starting wpa_supplicant..."
+wpa_supplicant -B -i "$IFACE" -c "$WPA_CONF" 2>/dev/null
+
+echo "[*] Requesting DHCP lease..."
+dhclient "$IFACE" 2>/dev/null || udhcpc -i "$IFACE" 2>/dev/null
+
+sleep 3
+
+IP=$(ip -4 addr show "$IFACE" 2>/dev/null | grep inet | awk '{print $2}')
+if [ -n "$IP" ]; then
+    echo "[+] Connected! IP: $IP"
+    echo "[+] SSID: $SSID"
+    echo "[+] Interface: $IFACE"
+else
+    echo "[!] Connection may have failed. Check:"
+    echo "    iw dev $IFACE link"
+    echo "    ip addr show $IFACE"
+fi

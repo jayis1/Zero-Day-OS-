@@ -1,0 +1,61 @@
+#!/bin/bash
+# /usr/local/bin/net-quickscan
+# Nmap with profiles
+# Usage: net-quickscan <target> [profile]
+# Profiles: quick, web, full, stealth, vuln
+
+TARGET="$1"
+PROFILE="${2:-quick}"
+LOOT="/opt/cardputer/loot/recon"
+TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+
+if [ -z "$TARGET" ]; then
+    echo "Usage: net-quickscan <target> [profile]"
+    echo "Profiles: quick, web, full, stealth, vuln"
+    exit 1
+fi
+
+mkdir -p "$LOOT"
+OUTFILE="$LOOT/quickscan_${PROFILE}_${TIMESTAMP}"
+
+echo "[*] ZERO-DAY OS — Nmap QuickScan"
+echo "[*] Target: $TARGET"
+echo "[*] Profile: $PROFILE"
+echo ""
+
+case "$PROFILE" in
+    quick)
+        echo "[*] Quick scan — top 100 ports, service detection..."
+        nmap -sV --top-ports 100 -T4 "$TARGET" -oA "$OUTFILE"
+        ;;
+    web)
+        echo "[*] Web scan — common web ports + scripts..."
+        nmap -sV -p 80,443,8080,8443,8000,8888,3000,5000 --script=http-enum,http-headers,http-title "$TARGET" -oA "$OUTFILE"
+        ;;
+    full)
+        echo "[*] Full scan — all 65535 ports, service detection, scripts..."
+        nmap -sV -sC -p- -T4 "$TARGET" -oA "$OUTFILE"
+        ;;
+    stealth)
+        echo "[*] Stealth scan — SYN scan, no ping, random decoys..."
+        nmap -sS -Pn -T2 -D RND:5 --top-ports 1000 "$TARGET" -oA "$OUTFILE"
+        ;;
+    vuln)
+        echo "[*] Vulnerability scan — vuln script category..."
+        nmap -sV --script=vuln -T4 "$TARGET" -oA "$OUTFILE"
+        ;;
+    *)
+        echo "[!] Unknown profile: $PROFILE"
+        echo "    Available: quick, web, full, stealth, vuln"
+        exit 1
+        ;;
+esac
+
+echo ""
+echo "[+] Scan complete. Results:"
+echo "    Normal: ${OUTFILE}.nmap"
+echo "    XML:    ${OUTFILE}.xml"
+echo "    Grep:   ${OUTFILE}.gnmap"
+
+OPEN_PORTS=$(grep -c "open" "${OUTFILE}.nmap" 2>/dev/null || echo "unknown")
+echo "[+] Open ports found: $OPEN_PORTS"

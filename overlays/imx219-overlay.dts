@@ -1,0 +1,57 @@
+// IMX219 Camera Overlay for Cardputer Zero
+// Based on standard bcm2835-camera with CM0 adjustments
+/dts-v1/;
+/plugin/;
+
+/ {
+    compatible = "brcm,bcm2837";
+
+    fragment@0 {
+        target = <&csi1>;
+        __overlay__ {
+            status = "okay";
+            imx219: imx219@10 {
+                compatible = "sony,imx219";
+                reg = <0x10>;
+                clocks = <&clk_osc>;
+                clock-names = "xclk";
+                VANA-supply = <&cam1_reg>;
+                VDIG-supply = <&cam1_dig_reg>;
+                VDDL-supply = <&cam1_dig_reg>;
+                rotation = <0>;
+                port {
+                    imx219_ep: endpoint {
+                        remote-endpoint = <&csi1_ep>;
+                        data-lanes = <1 2>;
+                        clock-noncontinuous;
+                        link-frequencies = /bits/ 64 <297000000>;
+                    };
+                };
+            };
+        };
+    };
+
+    fragment@1 {
+        target = <&csi1>;
+        __overlay__ {
+            status = "okay";
+            port {
+                csi1_ep: endpoint {
+                    remote-endpoint = <&imx219_ep>;
+                    data-lanes = <1 2>;
+                };
+            };
+        };
+    };
+
+    fragment@2 {
+        target-path = "/";
+        __overlay__ {
+            clk_osc: clk-osc {
+                compatible = "fixed-clock";
+                #clock-cells = <0>;
+                clock-frequency = <19200000>;
+            };
+        };
+    };
+};

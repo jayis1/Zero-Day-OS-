@@ -1,0 +1,74 @@
+#!/bin/bash
+# /usr/local/bin/first-boot
+# Runs ONCE on first boot, then disables itself
+
+echo "╔══════════════════════════════════════════════════╗"
+echo "║                                                  ║"
+echo "║   ZERO-DAY OS                                   ║"
+echo "║   First Boot Setup                               ║"
+echo "║                                                  ║"
+echo "╚══════════════════════════════════════════════════╝"
+echo ""
+
+if [ -f /etc/zeroday-firstboot-done ]; then
+    echo "[*] First boot already completed."
+    exit 0
+fi
+
+echo "[1/4] Expanding filesystem..."
+ROOT_PART=$(findmnt -n -o SOURCE /)
+PART_NUM=$(echo "$ROOT_PART" | grep -oP '\d+$')
+ROOT_DEV=$(echo "$ROOT_PART" | sed 's/\d$//')
+if [ -n "$PART_NUM" ] && [ -n "$ROOT_DEV" ]; then
+    parted "$ROOT_DEV" resizepart "$PART_NUM" 100% 2>/dev/null
+    partprobe "$ROOT_DEV" 2>/dev/null
+    resize2fs "${ROOT_DEV}${PART_NUM}" 2>/dev/null || \
+    resize2fs "$ROOT_PART" 2>/dev/null || true
+    echo "[+] Filesystem expanded."
+else
+    echo "[!] Could not auto-expand filesystem."
+fi
+
+echo ""
+echo "[2/4] Changing passwords..."
+echo "Current root password: zeroday"
+echo "Set a new root password:"
+passwd root
+echo ""
+
+echo "Set password for operator user:"
+passwd operator
+echo ""
+
+echo "[3/4] WiFi Configuration (skip for stealth)..."
+read -p "Configure WiFi now? [y/N] " WIFI_CHOICE
+if [ "$WIFI_CHOICE" = "y" ] || [ "$WIFI_CHOICE" = "Y" ]; then
+    cardputer-wifi-setup
+else
+    echo "[*] WiFi not configured. Radios stay OFF (stealth mode)."
+    echo "[*] Run 'cardputer-wifi-setup' later to configure."
+fi
+
+echo ""
+echo "[4/4] System Information..."
+cat /etc/zeroday-release 2>/dev/null
+echo ""
+echo "  CPU: $(nproc) cores @ $(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_max_freq 2>/dev/null || echo '?')Hz"
+echo "  RAM: $(free -m | awk '/Mem:/{print $2}')MB"
+echo "  Disk: $(df -h / | awk 'NR==2{print $2}') total, $(df -h / | awk 'NR==2{print $4}') free"
+cardputer-battery 2>/dev/null || echo "  Battery: (fuel gauge not available yet)"
+echo ""
+
+touch /etc/zeroday-firstboot-done
+systemctl disable first-boot.service 2>/dev/null
+
+echo ""
+echo "╔══════════════════════════════════════════════════╗"
+echo "║                                                  ║"
+echo "║   ZERO-DAY OS is ready.                         ║"
+echo "║                                                  ║"
+echo "║   Fn+Tab  TUI     Fn+P  Panic   Fn+O  OpenCode ║"
+echo "║   Fn+N    Nmap    Fn+B  BT Scan Fn+S  Shell     ║"
+echo "║   Fn+W    WiFi    Fn+C  Camera  Fn+I  IR        ║"
+echo "║                                                  ║"
+echo "╚══════════════════════════════════════════════════╝"

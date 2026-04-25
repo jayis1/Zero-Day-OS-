@@ -1,0 +1,34 @@
+#!/bin/bash -e
+# pi-gen/scripts/dependencies_check
+# Check that all required tools are available
+
+dependencies_check() {
+	local check_file="$1"
+	local missing=""
+
+	while IFS=: read -r cmd pkg; do
+		if [ -z "$cmd" ]; then
+			continue
+		fi
+
+		# Skip comments
+		[[ "$cmd" =~ ^# ]] && continue
+
+		# Try the command, fallback to the package name
+		if ! command -v "$cmd" >/dev/null 2>&1; then
+			if [ -n "$pkg" ] && command -v "$pkg" >/dev/null 2>&1; then
+				continue
+			fi
+			if [ -n "$pkg" ]; then
+				missing="$missing $cmd (install: $pkg)"
+			else
+				missing="$missing $cmd"
+			fi
+		fi
+	done < "$check_file"
+
+	if [ -n "$missing" ]; then
+		echo "Missing dependencies:$missing"
+		exit 1
+	fi
+}

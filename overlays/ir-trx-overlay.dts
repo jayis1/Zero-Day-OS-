@@ -1,0 +1,37 @@
+// IR Transceiver Overlay for Cardputer Zero
+// NOTE: GPIO pin assignments are PLACEHOLDERS pending M5Stack pinout
+/dts-v1/;
+/plugin/;
+
+/ {
+    compatible = "brcm,bcm2837";
+
+    fragment@0 {
+        target-path = "/";
+        __overlay__ {
+            ir_rx: ir-receiver@22 {
+                compatible = "gpio-ir-receiver";
+                gpios = <&gpio 22 1>;  // PLACEHOLDER: GPIO 22, active low
+                linux,rc-map-name = "rc-rc6-mce";
+                pinctrl-names = "default";
+            };
+
+            ir_tx: ir-transmitter@23 {
+                compatible = "pwm-ir-tx";
+                gpios = <&gpio 23 0>;  // PLACEHOLDER: GPIO 23
+                pinctrl-names = "default";
+            };
+        };
+    };
+
+    fragment@1 {
+        target = <&gpio>;
+        __overlay__ {
+            ir_pins: ir_pins {
+                brcm,pins = <22 23>;  // PLACEHOLDER
+                brcm,function = <0 1>; // input, output
+                brcm,pull = <1 0>;     // pull-up, none
+            };
+        };
+    };
+};

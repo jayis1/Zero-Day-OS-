@@ -1,0 +1,268 @@
+#!/bin/bash
+# /usr/local/bin/dongle-setup
+# Setup and manage RTL8821CU USB WiFi dongle
+# The built-in brcmfmac WiFi (wlan0) is for normal use.
+# The RTL8821CU dongle (wlan1) is dedicated to monitor mode attacks,
+# so wlan0 stays online for C2 / exfil while wlan1 is in monitor mode.
+#
+# Usage: dongle-setup [command]
+# Commands:
+#   install    — Install RTL8821CU driver (dkms or prebuilt)
+#   status     — Show dongle and interface status
+#   monitor    — Put dongle into monitor mode
+#   managed    — Put dongle back into managed mode
+#   scan       — Quick scan using the dongle
+#   test       — Verify dongle is working
+
+COMMAND="${1:-status}"
+DONGLE_IFACE=""
+DONGLE_DRIVER="8821cu"
+
+echo "[*] ZERO-DAY OS — RTL8821CU Dongle Manager"
+echo ""
+
+detect_dongle() {
+    DONGLE_IFACE=""
+    for iface in $(iw dev | awk '/Interface/{print $2}'); do
+        DRIVER=$(ethtool -i "$iface" 2>/dev/null | awk '/driver:/{print $2}')
+        if [ "$DRIVER" = "$DONGLE_DRIVER" ] || [ "$DRIVER" = "rtl8821cu" ] || [ "$DRIVER" = "8821cu" ]; then
+            DONGLE_IFACE="$iface"
+            return 0
+        fi
+    done
+
+    for iface in /sys/class/net/wlan*; do
+        [ -e "$iface" ] || continue
+        iname=$(basename "$iface")
+        if [ "$iname" != "wlan0" ]; then
+            echo "[*] Found secondary WiFi interface: $iname"
+            DONGLE_IFACE="$iname"
+            return 0
+        fi
+    done
+
+    return 1
+}
+
+case "$COMMAND" in
+    install)
+        echo "[*] Installing RTL8821CU driver..."
+        echo ""
+
+        if [ "$(id -u)" -ne 0 ]; then
+            echo "[!] Root required."
+            exit 1
+        fi
+
+        KERNEL_VER=$(uname -r)
+        echo "[*] Kernel version: $KERNEL_VER"
+
+        if modinfo 8821cu &>/dev/null || modinfo rtl8821cu &>/dev/null; then
+            echo "[+] RTL8821CU kernel module already available"
+            modprobe 8821cu 2>/dev/null || modprobe rtl8821cu 2>/dev/null
+            echo "[+] Module loaded"
+        else
+            echo "[*] Building RTL8821CU driver from source..."
+            echo ""
+
+            if [ ! -d /usr/src/rtl8821cu ]; then
+                echo "[*] Cloning driver repository..."
+                git clone https://github.com/morrownr/8821cu-20210118.git /usr/src/rtl8821cu 2>/dev/null || {
+                    echo "[!] Git clone failed. Trying alternative repo..."
+                    git clone https://github.com/aircrack-ng/rtl8812au.git /usr/src/rtl8821cu 2>/dev/null || {
+                        echo "[!] Driver source not available. Install manually:"
+                        echo "    git clone https://github.com/morrownr/8821cu-20210118.git"
+                        echo "    cd 8821cu-20210118"
+                        echo "    make && make install"
+                        exit 1
+                    }
+                }
+            fi
+
+            echo "[*] Building driver for kernel $KERNEL_VER..."
+            cd /usr/src/rtl8821cu || exit 1
+            make clean 2>/dev/null
+            make -j$(nproc) 2>&1 | tail -5
+            make install 2>&1 | tail -5
+            modprobe 8821cu 2>/dev/null || modprobe rtl8821cu 2>/dev/null
+
+            if lsmod | grep -qi "8821\|rtl8821"; then
+                echo "[+] RTL8821CU driver installed and loaded"
+            else
+                echo "[!] Driver build may have failed. Check dmesg for errors."
+            fi
+        fi
+
+        echo ""
+        echo "[*] Creating udev rule for consistent naming..."
+        cat > /etc/udev/rules.d/70-rtl8821cu.rules << 'UDEV'
+# RTL8821CU USB WiFi dongle — assign to wlan1
+SUBSYSTEM=="net", ACTION=="add", ATTRS{idVendor}=="0bda", ATTRS{idProduct}=="c811|1a2b|c811", NAME="wlan1"
+UDEV
+
+        udevadm control --reload-rules 2>/dev/null
+        echo "[+] UDEV rule created: dongle will always be wlan1"
+        echo ""
+        echo "[+] RTL8821CU setup complete!"
+        echo "[*] Plug in the dongle and run: dongle-setup status"
+        ;;
+
+    status)
+        echo "[*] WiFi Interfaces:"
+        echo ""
+        for iface in $(iw dev | awk '/Interface/{print $2}'); do
+            TYPE=$(iw dev "$iface" info 2>/dev/null | awk '/type/{print $2}')
+            DRV=$(ethtool -i "$iface" 2>/dev/null | awk '/driver:/{print $2}')
+            MAC=$(ip link show "$iface" 2>/dev/null | awk '/ether/{print $2}')
+            STATE=$(ip link show "$iface" 2>/dev/null | grep -c "UP" | sed 's/1/UP/;s/0/DOWN/')
+            echo "  $iface  driver=$DRV  type=$TYPE  state=$STATE  mac=$MAC"
+        done
+        echo ""
+
+        if detect_dongle; then
+            echo "[+] RTL8821CU dongle found on $DONGLE_IFACE"
+            DONGLE_TYPE=$(iw dev "$DONGLE_IFACE" info 2>/dev/null | awk '/type/{print $2}')
+            echo "    Mode: $DONGLE_TYPE"
+            echo ""
+            echo "    Dual-WiFi attack setup:"
+            echo "      wlan0 (built-in)  → managed mode → C2 / exfil / internet"
+            echo "      $DONGLE_IFACE (dongle) → monitor mode → attacks"
+            echo ""
+            echo "    Start attack: wifi-deauth $DONGLE_IFACE <bssid> <chan>"
+            echo "    Start capture: wifi-handshake $DONGLE_IFACE <bssid> <chan>"
+        else
+            echo "[!] No RTL8821CU dongle detected"
+            echo ""
+            echo "    If dongle is plugged in:"
+            echo "      1. Run: dongle-setup install"
+            echo "      2. Unplug and re-plug the dongle"
+            echo "      3. Run: dongle-setup status"
+            echo ""
+            echo "    Supported dongles:"
+            echo "      - ASUS USB-AC51 (RTL8821CU)"
+            echo "      - TP-Link Archer T2U Nano (RTL8821CU)"
+            echo "      - EDUP EP-AC1605 (RTL8821CU)"
+            echo "      - Any USB WiFi adapter with RTL8821CU chipset"
+            echo "      - USB IDs: 0bda:c811, 0bda:1a2b, 0bda:c811"
+
+            echo ""
+            echo "    lsusb output:"
+            lsusb 2>/dev/null | grep -i "realtek\|0bda\|wifi\|wireless\|802.11" || echo "      (no USB WiFi devices found)"
+        fi
+        ;;
+
+    monitor)
+        if [ "$(id -u)" -ne 0 ]; then
+            echo "[!] Root required."
+            exit 1
+        fi
+
+        if detect_dongle; then
+            echo "[*] Putting $DONGLE_IFACE into monitor mode..."
+            ip link set "$DONGLE_IFACE" down
+            iw dev "$DONGLE_IFACE" set type monitor
+            ip link set "$DONGLE_IFACE" up
+            echo "[+] $DONGLE_IFACE is now in MONITOR mode"
+            echo ""
+            echo "[*] wlan0 (built-in) stays in managed mode for C2"
+            echo "[*] Attack commands:"
+            echo "    wifi-deauth $DONGLE_IFACE <bssid> <chan>"
+            echo "    wifi-handshake $DONGLE_IFACE <bssid> <chan>"
+            echo "    wifi-pmkid $DONGLE_IFACE <bssid> <chan>"
+        else
+            echo "[!] No RTL8821CU dongle detected"
+            echo "[!] Plug in the dongle and run: dongle-setup install"
+            exit 1
+        fi
+        ;;
+
+    managed)
+        if [ "$(id -u)" -ne 0 ]; then
+            echo "[!] Root required."
+            exit 1
+        fi
+
+        if detect_dongle; then
+            echo "[*] Putting $DONGLE_IFACE into managed mode..."
+            ip link set "$DONGLE_IFACE" down
+            iw dev "$DONGLE_IFACE" set type managed
+            ip link set "$DONGLE_IFACE" up
+            echo "[+] $DONGLE_IFACE is now in MANAGED mode"
+        else
+            echo "[!] No RTL8821CU dongle detected"
+            exit 1
+        fi
+        ;;
+
+    scan)
+        if detect_dongle; then
+            CURR_TYPE=$(iw dev "$DONGLE_IFACE" info 2>/dev/null | awk '/type/{print $2}')
+            if [ "$CURR_TYPE" != "managed" ]; then
+                echo "[*] Switching $DONGLE_IFACE to managed mode for scanning..."
+                sudo ip link set "$DONGLE_IFACE" down
+                sudo iw dev "$DONGLE_IFACE" set type managed
+                sudo ip link set "$DONGLE_IFACE" up
+                sleep 2
+            fi
+            wifi-scan "$DONGLE_IFACE"
+        else
+            echo "[!] No dongle found. Scanning with wlan0..."
+            wifi-scan wlan0
+        fi
+        ;;
+
+    test)
+        echo "[*] RTL8821CU Dongle Test"
+        echo ""
+        echo "[1] Checking kernel modules..."
+        if lsmod | grep -qi "8821\|rtl8821"; then
+            echo "[+] Driver module loaded:"
+            lsmod | grep -i "8821\|rtl8821"
+        else
+            echo "[!] RTL8821CU driver not loaded"
+            echo "    Try: sudo modprobe 8821cu"
+            echo "    Or:  sudo modprobe rtl8821cu"
+        fi
+        echo ""
+
+        echo "[2] Checking USB devices..."
+        lsusb | grep -i "realtek\|0bda\|802.11\|wireless" && echo "[+] USB WiFi dongle detected" || echo "[!] No USB WiFi dongle detected in lsusb"
+        echo ""
+
+        echo "[3] Checking network interfaces..."
+        iw dev 2>/dev/null | grep -E "Interface|type|addr" || echo "[!] No wireless interfaces found"
+        echo ""
+
+        echo "[4] Checking rfkill..."
+        rfkill list wifi 2>/dev/null || echo "[!] rfkill not available"
+        echo ""
+
+        echo "[5] Dongle interface test..."
+        if detect_dongle; then
+            echo "[+] Dongle interface found: $DONGLE_IFACE"
+            echo "[*] Running link test..."
+            iw dev "$DONGLE_IFACE" link 2>/dev/null || echo "    (not connected — this is expected)"
+        else
+            echo "[!] No dongle interface detected"
+        fi
+        ;;
+
+    *)
+        echo "Usage: dongle-setup [command]"
+        echo ""
+        echo "Commands:"
+        echo "  install   — Install RTL8821CU driver (dkms or from source)"
+        echo "  status    — Show dongle and interface status"
+        echo "  monitor   — Put dongle into monitor mode for attacks"
+        echo "  managed   — Put dongle back into managed mode"
+        echo "  scan      — Quick WiFi scan using the dongle"
+        echo "  test      — Verify dongle is working"
+        echo ""
+        echo "Dual-WiFi Attack Architecture:"
+        echo "  wlan0 (built-in brcmfmac)  → managed mode → C2 / exfil / internet"
+        echo "  wlan1 (RTL8821CU dongle)   → monitor mode → deauth / capture / evil twin"
+        echo ""
+        echo "Supported dongles: Any USB WiFi adapter with RTL8821CU chipset"
+        echo "  USB IDs: 0bda:c811, 0bda:1a2b"
+        ;;
+esac

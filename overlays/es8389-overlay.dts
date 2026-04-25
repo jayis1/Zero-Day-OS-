@@ -1,0 +1,57 @@
+// ES8389 Audio Codec Overlay for Cardputer Zero
+// NOTE: I2C address and I2S pin assignments are PLACEHOLDERS
+/dts-v1/;
+/plugin/;
+
+/ {
+    compatible = "brcm,bcm2837";
+
+    fragment@0 {
+        target = <&i2s>;
+        __overlay__ {
+            status = "okay";
+        };
+    };
+
+    fragment@1 {
+        target = <&i2c1>;
+        __overlay__ {
+            status = "okay";
+            es8389: es8389@10 {
+                compatible = "everest,es8389";
+                reg = <0x10>;  // PLACEHOLDER I2C address
+                #sound-dai-cells = <0>;
+                clocks = <&clocks BCM2835_CLOCK_GP0>;
+                clock-names = "mclk";
+                PVDD-supply = <&vdd_3v3>;
+                AVDD-supply = <&vdd_3v3>;
+            };
+        };
+    };
+
+    fragment@2 {
+        target = <&sound>;
+        __overlay__ {
+            compatible = "simple-audio-card";
+            simple-audio-card,name = "Cardputer-Zero-Audio";
+            simple-audio-card,format = "i2s";
+            simple-audio-card,mclk-fs = <256>;
+            simple-audio-card,widgets =
+                "Speaker", "Speaker",
+                "Microphone", "Mic";
+            simple-audio-card,routing =
+                "Speaker", "LOUT1",
+                "LOUT1", "DAC",
+                "ADC", "Mic",
+                "Mic", "AMIC";
+            simple-audio-card,cpu {
+                sound-dai = <&i2s>;
+                dai-tdm-slot-num = <2>;
+                dai-tdm-slot-width = <32>;
+            };
+            simple-audio-card,codec {
+                sound-dai = <&es8389>;
+            };
+        };
+    };
+};

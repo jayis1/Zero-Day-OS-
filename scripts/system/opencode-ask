@@ -1,0 +1,51 @@
+#!/bin/bash
+# /usr/local/bin/opencode-ask
+# Quick AI prompt — ask a question without leaving the terminal
+# Usage: opencode-ask [question]
+#   If called without arguments, prompts for input interactively.
+#   Bound to Fn+A in i3.
+
+WORKSPACE="/opt/cardputer/workspace"
+mkdir -p "$WORKSPACE"
+
+if [ -n "$*" ]; then
+    QUESTION="$*"
+else
+    echo "[*] ZERO-DAY OS — OpenCode Ask"
+    echo "[*] Type your question and press Enter:"
+    read -r QUESTION
+fi
+
+if [ -z "$QUESTION" ]; then
+    echo "[!] No question provided."
+    exit 1
+fi
+
+# Try OpenCode binary first
+if command -v opencode &>/dev/null; then
+    opencode ask "$QUESTION"
+else
+    # Fallback: use Python + requests to hit a local/API endpoint
+    # If no AI backend is configured, save the question for later
+    TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+    QUESTION_FILE="$WORKSPACE/questions_${TIMESTAMP}.txt"
+
+    echo "[!] OpenCode AI backend not available (armhf binary pending)"
+    echo "[*] Question saved to: $QUESTION_FILE"
+    echo ""
+    echo "Q: $QUESTION"
+    echo "" > "$QUESTION_FILE"
+    echo "Timestamp: $(date '+%Y-%m-%d %H:%M:%S')" >> "$QUESTION_FILE"
+    echo "Question: $QUESTION" >> "$QUESTION_FILE"
+    echo "---" >> "$QUESTION_FILE"
+
+    # If we have internet, try to offer some local help
+    if command -v man &>/dev/null; then
+        echo ""
+        echo "[*] Local manual pages available. Try: man <command>"
+    fi
+
+    echo ""
+    echo "[*] To use AI-assisted coding, install the OpenCode armhf binary when available."
+    echo "[*] In the meantime, use opencode-session (Fn+O) for file editing."
+fi

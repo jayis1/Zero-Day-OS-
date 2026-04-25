@@ -1,0 +1,3 @@
+# Terminal packages — st (stterm) + fbterm fallback
+# fbterm may not be in Bookworm — install if available, skip if not
+stterm

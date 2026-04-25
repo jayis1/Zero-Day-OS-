@@ -1,0 +1,59 @@
+#!/bin/bash
+# /usr/local/bin/zeroday-boot
+# Boot orchestration script — runs once at startup
+
+echo "[zeroday-boot] Starting ZERO-DAY OS..."
+
+# Play boot animation on console
+if [ -x /usr/local/bin/zeroday-bootanim ]; then
+    /usr/local/bin/zeroday-bootanim
+fi
+
+SYSFS="/sys"
+
+echo "[zeroday-boot] Setting CPU governor..."
+echo "ondemand" > $SYSFS/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null
+echo "1000000" > $SYSFS/devices/system/cpu/cpu0/cpufreq/scaling_max_freq 2>/dev/null
+
+echo "[zeroday-boot] Blocking wireless radios (stealth default)..."
+rfkill block all 2>/dev/null
+
+echo "[zeroday-boot] Loading RTL8821CU dongle driver..."
+modprobe 8821cu 2>/dev/null || modprobe rtl8821cu 2>/dev/null || true
+
+echo "[zeroday-boot] Setting LCD brightness..."
+if [ -d $SYSFS/class/backlight ]; then
+    BRIGHTNESS_DEV=$(ls $SYSFS/class/backlight/ | head -1)
+    echo 200 > $SYSFS/class/backlight/$BRIGHTNESS_DEV/brightness 2>/dev/null
+fi
+
+echo "[zeroday-boot] Configuring tmpfs..."
+mount /tmp 2>/dev/null || true
+mount /var/log 2>/dev/null || true
+mount /var/tmp 2>/dev/null || true
+
+echo "[zeroday-boot] Syncing hardware clock..."
+hwclock --hctosys 2>/dev/null || true
+
+echo "[zeroday-boot] Creating loot directories..."
+mkdir -p /opt/cardputer/{handshakes,pmkid,payloads,workspace,loot/{recon,bt,ble,ir,cam,rf,screenshot},config/{attack-profiles,wordlists,ir_codes,opencode}}
+
+echo "[zeroday-boot] Setting permissions..."
+chmod 700 /opt/cardputer
+chmod 700 /opt/cardputer/loot
+
+echo "[zeroday-boot] Starting tamper detection..."
+systemctl start tamper-watch.service 2>/dev/null || true
+
+echo "[zeroday-boot] Auto-login on tty1..."
+if [ -f /etc/systemd/system/getty@tty1.service.d/autologin.conf ]; then
+    systemctl start getty@tty1.service 2>/dev/null
+fi
+
+echo "[zeroday-boot] Launching Xorg + i3..."
+if [ -f /etc/X11/xorg.conf ]; then
+    su - root -c "startx &" 2>/dev/null &
+fi
+
+echo "[zeroday-boot] ZERO-DAY OS ready."
+echo "[zeroday-boot] Fn+Tab: TUI  |  Fn+P: Panic  |  Fn+O: OpenCode"

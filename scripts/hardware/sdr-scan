@@ -1,0 +1,106 @@
+#!/bin/bash
+# /usr/local/bin/sdr-scan
+# RTL-SDR frequency sweep and heatmap generation
+# Scans a frequency range using rtl_power and produces a CSV or heatmap image
+# Usage: sdr-scan [freq_range] [duration]
+#   freq_range — Frequency range in MHz (default: 433.0-434.0)
+#   duration   — Scan duration in seconds (default: 10)
+#
+# Examples:
+#   sdr-scan                    # Scan 433MHz band for 10s
+#   sdr-scan 315.0-316.0       # Scan 315MHz band
+#   sdr-scan 868.0-869.0 30    # Scan 868MHz band for 30s
+#   sdr-scan 88.0-108.0 15     # Scan FM radio band
+
+FREQ_RANGE="${1:-433.0-434.0}"
+DURATION="${2:-10}"
+TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+OUTDIR="/opt/cardputer/loot/sdr"
+mkdir -p "$OUTDIR"
+
+echo "[*] ZERO-DAY OS — SDR Frequency Scanner"
+echo ""
+
+# Check for RTL-SDR hardware
+if ! rtl_test -d 0 >/dev/null 2>&1; then
+    echo "[!] RTL-SDR device not found."
+    echo "[!] Connect an RTL-SDR dongle to the USB-A port."
+    echo ""
+    echo "[*] Supported dongles:"
+    echo "    - RTL-SDR v3/v4"
+    echo "    - Nooelec NESDR Smart"
+    echo "    - Any RTL2832U-based dongle"
+    exit 1
+fi
+
+# Parse frequency range
+LOW_FREQ=$(echo "$FREQ_RANGE" | cut -d'-' -f1)
+HIGH_FREQ=$(echo "$FREQ_RANGE" | cut -d'-' -f2)
+
+# Validate
+if [ -z "$LOW_FREQ" ] || [ -z "$HIGH_FREQ" ]; then
+    echo "[!] Invalid frequency range. Use format: START-END (e.g., 433.0-434.0)"
+    exit 1
+fi
+
+echo "[*] Frequency range: ${LOW_FREQ} - ${HIGH_FREQ} MHz"
+echo "[*] Duration: ${DURATION}s"
+echo "[*] Output: ${OUTDIR}/"
+echo ""
+
+OUTFILE="${OUTDIR}/scan_${TIMESTAMP}.csv"
+HEATMAP="${OUTDIR}/heatmap_${TIMESTAMP}.png"
+
+echo "[*] Starting scan..."
+echo "[*] rtl_power -f ${LOW_FREQ}M:${HIGH_FREQ}M:10k -g 40 -i 1 -e ${DURATION} ${OUTFILE}"
+
+rtl_power -f "${LOW_FREQ}M:${HIGH_FREQ}M:10k" -g 40 -i 1 -e "$DURATION" "$OUTFILE" 2>/dev/null
+
+if [ $? -ne 0 ]; then
+    echo "[!] Scan failed."
+    echo "[!] Try: rtl_test (to verify hardware)"
+    exit 1
+fi
+
+echo "[+] Scan complete: ${OUTFILE}"
+echo ""
+
+# Try to generate heatmap if Python + matplotlib available
+if command -v generate_heatmap.py &>/dev/null; then
+    generate_heatmap.py "$OUTFILE" "$HEATMAP" 2>/dev/null && {
+        echo "[+] Heatmap saved: ${HEATMAP}"
+    }
+elif command -v python3 &>/dev/null; then
+    # Check if matplotlib is installed
+    python3 -c "import matplotlib" 2>/dev/null && {
+        python3 -c "
+import sys
+try:
+    from rtl_power_heatmap import main
+    main()
+except ImportError:
+    try:
+        from subprocess import check_output
+        check_output(['python3', '-m', 'rtl_power_heatmap', sys.argv[1], '-o', sys.argv[2]])
+    except:
+        print('[!] Heatmap generation unavailable')
+" "$OUTFILE" "$HEATMAP" 2>/dev/null && echo "[+] Heatmap saved: ${HEATMAP}" || true
+    }
+fi
+
+# Quick summary — find peaks
+echo "[*] Top signals by power:"
+if [ -f "$OUTFILE" ]; then
+    # rtl_power CSV: freq_low, freq_high, freq_step, samples, dB, dB, ...
+    # Find the highest power reading per line
+    awk -F',' '{
+        max = -999; freq = $1
+        for (i=6; i<=NF; i++) {
+            if ($i+0 > max+0) { max = $i+0 }
+        }
+        if (max > -30) print max, freq
+    }' "$OUTFILE" | sort -rn | head -10
+fi
+
+echo ""
+echo "[*] Results saved to: ${OUTDIR}/"

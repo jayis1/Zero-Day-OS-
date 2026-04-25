@@ -1,0 +1,7 @@
+xserver-xorg-core
+xserver-xorg-video-fbdev
+xserver-xorg-input-libinput
+i3-wm
+i3status
+xdotool
+feh

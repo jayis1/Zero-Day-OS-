@@ -1,0 +1,14 @@
+╔══════════════════════════════════════════════════╗
+║                                                  ║
+║   ZERO-DAY OS  v0.1-pre                         ║
+║   M5Stack Cardputer Zero (CM0)                  ║
+║                                                  ║
+║   Battery: ████████░░ 82%   |  CPU: 800MHz     ║
+║   WiFi: OFF  |  BT: OFF  |  Eth: DOWN          ║
+║   RAM: 131M/512M  |  Disk: 28.1G free          ║
+║                                                  ║
+║   Fn+Tab  TUI    Fn+P  Panic    Fn+O  OpenCode  ║
+║   Fn+N    Nmap   Fn+B  BT Scan  Fn+S  Shell    ║
+║   Fn+W    WiFi   Fn+C  Camera   Fn+I  IR       ║
+║                                                  ║
+╚══════════════════════════════════════════════════╝

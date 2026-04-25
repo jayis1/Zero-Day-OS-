@@ -1,0 +1,63 @@
+// Cardputer Zero 46-Key Matrix Keyboard Overlay
+// NOTE: GPIO pin assignments are PLACEHOLDERS pending M5Stack pinout
+/dts-v1/;
+/plugin/;
+
+/ {
+    compatible = "brcm,bcm2837";
+
+    fragment@0 {
+        target = <&gpio>;
+        __overlay__ {
+            kbd_pins: kbd_pins {
+                brcm,pins = <5 6 7 8 9 10 11 12>;  // PLACEHOLDER: row pins
+                brcm,function = <0 0 0 0 0 0 0 0>; // input
+                brcm,pull = <1 1 1 1 1 1 1 1>;     // pull-up
+            };
+            col_pins: col_pins {
+                brcm,pins = <13 14 15 16 17 18 19 20>; // PLACEHOLDER: col pins
+                brcm,function = <1 1 1 1 1 1 1 1>;     // output
+                brcm,pull = <0 0 0 0 0 0 0 0>;         // no pull
+            };
+        };
+    };
+
+    fragment@1 {
+        target-path = "/";
+        __overlay__ {
+            keyboard_matrix: keyboard {
+                compatible = "gpio-matrix-keypad";
+                pinctrl-names = "default";
+                pinctrl-0 = <&kbd_pins &col_pins>;
+                row-gpios = <&gpio 5 0 &gpio 6 0 &gpio 7 0 &gpio 8 0
+                             &gpio 9 0 &gpio 10 0 &gpio 11 0 &gpio 12 0>;
+                col-gpios = <&gpio 13 0 &gpio 14 0 &gpio 15 0 &gpio 16 0
+                             &gpio 17 0 &gpio 18 0 &gpio 19 0 &gpio 20 0>;
+                linux,keymap = <
+                    // Row 0
+                    0x0000 KEY_Q  0x0100 KEY_W  0x0200 KEY_E  0x0300 KEY_R
+                    0x0400 KEY_T  0x0500 KEY_Y  0x0600 KEY_U  0x0700 KEY_I
+                    // Row 1
+                    0x0001 KEY_A  0x0101 KEY_S  0x0201 KEY_D  0x0301 KEY_F
+                    0x0401 KEY_G  0x0501 KEY_H  0x0601 KEY_J  0x0701 KEY_K
+                    // Row 2
+                    0x0002 KEY_Z  0x0102 KEY_X  0x0202 KEY_C  0x0302 KEY_V
+                    0x0402 KEY_B  0x0502 KEY_N  0x0602 KEY_M  0x0702 KEY_COMMA
+                    // Row 3
+                    0x0003 KEY_1  0x0103 KEY_2  0x0203 KEY_3  0x0303 KEY_4
+                    0x0403 KEY_5  0x0503 KEY_6  0x0603 KEY_7  0x0703 KEY_8
+                    // Row 4
+                    0x0004 KEY_9  0x0104 KEY_0  0x0204 KEY_ENTER 0x0304 KEY_BACKSPACE
+                    0x0404 KEY_TAB 0x0504 KEY_SPACE 0x0604 KEY_LEFTALT 0x0704 KEY_LEFTSHIFT
+                    // Row 5
+                    0x0005 KEY_LEFT 0x0105 KEY_RIGHT 0x0205 KEY_DOWN 0x0305 KEY_UP
+                    0x0405 KEY_ESC 0x0505 KEY_P  0x0605 KEY_O  0x0705 KEY_L
+                >;
+                gpio-activelow;
+                debounce-delay-ms = <5>;
+                col-scan-delay-us = <100>;
+                linux,no-autorepeat;
+            };
+        };
+    };
+};

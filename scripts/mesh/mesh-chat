@@ -1,0 +1,209 @@
+#!/bin/bash
+# /usr/local/bin/mesh-chat
+# Meshtastic off-grid mesh messaging app for Cardputer Zero
+# Connect a LoRa module to the Expansion Port (Grove HY2.0-4P / ExtPort)
+# and message other Meshtastic devices with no internet or cell service.
+#
+# Usage: mesh-chat [command]
+# Commands: install, info, send, listen, chat, nodes, exfil
+
+COMMAND="${1:-info}"
+LOOT="/opt/cardputer/loot/recon"
+
+echo "[*] ZERO-DAY OS — Meshtastic Mesh Messenger"
+echo ""
+
+case "$COMMAND" in
+    install)
+        if [ "$(id -u)" -ne 0 ]; then
+            echo "[!] Root required."
+            exit 1
+        fi
+
+        echo "[*] Installing Meshtastic..."
+        pip3 install --break-system-packages meshtastic 2>/dev/null || \
+        pip3 install meshtastic 2>/dev/null || {
+            echo "[!] Installation failed. Manual install:"
+            echo "    pip3 install meshtastic"
+            exit 1
+        }
+
+        echo "[+] Meshtastic installed: $(meshtastic --version 2>/dev/null || echo 'ok')"
+        echo ""
+        echo "[*] Wiring — Grove HY2.0-4P port (I2C/UART switchable):"
+        echo "    Pin 1 (VCC 5V)  → LoRa module VCC"
+        echo "    Pin 2 (TXD)     → LoRa module RXD"
+        echo "    Pin 3 (RXD)     → LoRa module TXD"
+        echo "    Pin 4 (GND)     → LoRa module GND"
+        echo ""
+        echo "    Or ExtPort 2.54-14P UART pins:"
+        echo "    GPIO 14 (TXD) → LoRa RXD"
+        echo "    GPIO 15 (RXD) → LoRa TXD"
+        echo "    GND            → LoRa GND"
+        echo "    5V / 3.3V      → LoRa VCC (check module voltage!)"
+        echo ""
+        echo "[*] Supported modules:"
+        echo "    RAK4631 (433/868/915MHz) — most common, recommended"
+        echo "    RA-01 / SX1276 (433/868/915MHz)"
+        echo "    Reyax RYLR896 (868/915MHz)"
+        echo "    Heltec WiFi LoRa 32 (433/868/915MHz)"
+        echo ""
+        echo "[*] Next: connect module and run 'mesh-chat info'"
+        ;;
+
+    info)
+        echo "[*] Checking for Meshtastic device..."
+        SERIAL_DEV=$(ls /dev/ttyUSB* /dev/ttyACM* 2>/dev/null | head -1)
+        [ -z "$SERIAL_DEV" ] && SERIAL_DEV="/dev/ttyAMA0"
+
+        if ! command -v meshtastic &>/dev/null; then
+            echo "[!] Meshtastic CLI not installed. Run: mesh-chat install"
+            exit 1
+        fi
+
+        meshtastic --port "$SERIAL_DEV" --info 2>/dev/null || {
+            echo "[!] No Meshtastic device found on $SERIAL_DEV"
+            echo "[!] Connect a LoRa module and check wiring."
+            echo ""
+            echo "Serial ports available:"
+            ls -la /dev/ttyUSB* /dev/ttyACM* /dev/ttyAMA* 2>/dev/null || echo "  (none)"
+        }
+        ;;
+
+    send)
+        MESSAGE="$2"
+        DEST="$3"
+
+        if [ -z "$MESSAGE" ]; then
+            echo "Usage: mesh-chat send <message> [destination_node]"
+            echo ""
+            echo "  message          — Text to send (encrypted by the mesh)"
+            echo "  destination_node — Node ID or 'all' for broadcast (default: all)"
+            echo ""
+            echo "Examples:"
+            echo "  mesh-chat send 'Moving to position B'"
+            echo "  mesh-chat send 'Target found at 192.168.1.50' !a1b2c3d4"
+            exit 0
+        fi
+
+        SERIAL_DEV=$(ls /dev/ttyUSB* /dev/ttyACM* 2>/dev/null | head -1)
+        [ -z "$SERIAL_DEV" ] && SERIAL_DEV="/dev/ttyAMA0"
+
+        if [ -n "$DEST" ] && [ "$DEST" != "all" ]; then
+            meshtastic --port "$SERIAL_DEV" --sendtext "$MESSAGE" --dest "$DEST" 2>/dev/null
+        else
+            meshtastic --port "$SERIAL_DEV" --sendtext "$MESSAGE" 2>/dev/null
+        fi
+
+        echo "[+] Sent: $MESSAGE"
+        ;;
+
+    listen)
+        echo "[*] Listening for mesh messages... (Ctrl+C to stop)"
+        echo ""
+
+        SERIAL_DEV=$(ls /dev/ttyUSB* /dev/ttyACM* 2>/dev/null | head -1)
+        [ -z "$SERIAL_DEV" ] && SERIAL_DEV="/dev/ttyAMA0"
+
+        mkdir -p "$LOOT"
+        meshtastic --port "$SERIAL_DEV" --listen 2>/dev/null | while IFS= read -r line; do
+            echo "$line"
+            echo "[$(date '+%Y-%m-%d %H:%M:%S')] $line" >> "$LOOT/mesh_log_$(date +%Y%m%d).txt"
+        done
+        ;;
+
+    chat)
+        echo "[*] Mesh Chat — type a message and press Enter to send."
+        echo "[*] Incoming messages appear below."
+        echo "[*] Type 'quit' to exit."
+        echo ""
+
+        SERIAL_DEV=$(ls /dev/ttyUSB* /dev/ttyACM* 2>/dev/null | head -1)
+        [ -z "$SERIAL_DEV" ] && SERIAL_DEV="/dev/ttyAMA0"
+
+        # Background listener
+        meshtastic --port "$SERIAL_DEV" --listen 2>/dev/null &
+        LISTEN_PID=$!
+
+        while read -r -p "mesh> " MSG; do
+            [ "$MSG" = "quit" ] && break
+            [ -z "$MSG" ] && continue
+            meshtastic --port "$SERIAL_DEV" --sendtext "$MSG" 2>/dev/null
+        done
+
+        kill "$LISTEN_PID" 2>/dev/null
+        echo "[*] Chat ended."
+        ;;
+
+    nodes)
+        SERIAL_DEV=$(ls /dev/ttyUSB* /dev/ttyACM* 2>/dev/null | head -1)
+        [ -z "$SERIAL_DEV" ] && SERIAL_DEV="/dev/ttyAMA0"
+
+        echo "[*] Known mesh nodes:"
+        meshtastic --port "$SERIAL_DEV" --nodes 2>/dev/null || {
+            echo "[!] Cannot list nodes. Connect a module and run: mesh-chat init"
+        }
+        ;;
+
+    exfil)
+        FILE="$2"
+
+        if [ -z "$FILE" ] || [ ! -f "$FILE" ]; then
+            echo "Usage: mesh-chat exfil <file>"
+            echo ""
+            echo "Split a file into base64 chunks and send over mesh."
+            echo "Reassemble on the other end with: mesh-chat exfil --assemble <output>"
+            echo ""
+            echo "Note: ~200 bytes per message. A 1KB file = ~5 messages."
+            exit 0
+        fi
+
+        SERIAL_DEV=$(ls /dev/ttyUSB* /dev/ttyACM* 2>/dev/null | head -1)
+        [ -z "$SERIAL_DEV" ] && SERIAL_DEV="/dev/ttyAMA0"
+
+        FILESIZE=$(stat -c%s "$FILE")
+        FILENAME=$(basename "$FILE")
+        MD5=$(md5sum "$FILE" | awk '{print $1}')
+
+        echo "[*] Exfiltrating: $FILENAME ($FILESIZE bytes, md5: $MD5)"
+        echo "[*] Splitting into mesh-size chunks..."
+
+        # Send header
+        meshtastic --port "$SERIAL_DEV" --sendtext "ZDX:$FILENAME:$FILESIZE:$MD5" 2>/dev/null
+        sleep 2
+
+        # Send chunks
+        CHUNK=0
+        base64 "$FILE" | fold -w 180 | while IFS= read -r LINE; do
+            CHUNK=$((CHUNK + 1))
+            meshtastic --port "$SERIAL_DEV" --sendtext "ZDC:$CHUNK:$LINE" 2>/dev/null
+            printf "\r[*] Chunk %d sent" "$CHUNK"
+            sleep 2
+        done
+
+        # Send footer
+        meshtastic --port "$SERIAL_DEV" --sendtext "ZDE:$FILENAME" 2>/dev/null
+        echo ""
+        echo "[+] Exfil complete."
+        ;;
+
+    *)
+        echo "Usage: mesh-chat [command]"
+        echo ""
+        echo "Off-grid mesh messaging via Meshtastic LoRa."
+        echo "No internet, no cell, no WiFi needed."
+        echo ""
+        echo "Commands:"
+        echo "  install   — Install Meshtastic CLI"
+        echo "  info      — Show connected device info"
+        echo "  send      — Send a message over mesh"
+        echo "  listen    — Listen for incoming messages"
+        echo "  chat      — Interactive chat mode"
+        echo "  nodes     — List discovered mesh nodes"
+        echo "  exfil     — Send a file over mesh (chunked base64)"
+        echo ""
+        echo "Wiring (Grove HY2.0-4P):"
+        echo "  VCC → LoRa VCC | TXD → LoRa RXD"
+        echo "  RXD → LoRa TXD | GND → LoRa GND"
+        ;;
+esac

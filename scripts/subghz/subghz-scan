@@ -1,0 +1,133 @@
+#!/bin/bash
+# /usr/local/bin/subghz-scan
+# Scan sub-GHz radio frequencies via CC1101 module on the expansion port
+# Supports 300-928MHz (region-dependent)
+#
+# Usage: subghz-scan [freq_range]
+# Examples:
+#   subghz-scan              — Scan common Sub-GHz frequencies
+#   subghz-scan 433-434      — Scan 433MHz ISM band
+#   subghz-scan 300-928      — Full scan (takes a while)
+#
+# Requires: CC1101 module connected via SPI on the expansion port
+# Wiring (2.54-14P ExtPort):
+#   Pin 3.3V → CC1101 VCC
+#   Pin GND  → CC1101 GND
+#   Pin MOSI → CC1101 MOSI (SPI)
+#   Pin MISO → CC1101 MISO (SPI)
+#   Pin SCLK → CC1101 SCK  (SPI)
+#   Pin CE0  → CC1101 CSN  (SPI chip select)
+#   Pin GPIO2 → CC1101 GDO0 (data)
+
+FREQ_RANGE="${1:-433-434}"
+LOOT="/opt/cardputer/loot/rf"
+TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+
+mkdir -p "$LOOT"
+
+echo "[*] ZERO-DAY OS — Sub-GHz Scanner"
+echo "[*] Range: ${FREQ_RANGE}MHz"
+echo ""
+
+# Common Sub-GHz frequencies by region
+COMMON_FREQS_433="433.070 433.220 433.420 433.820 433.920"
+COMMON_FREQS_315="315.000 315.500"
+COMMON_FREQS_868="868.000 868.100 868.350 868.800"
+COMMON_FREQS_915="915.000 915.100 915.200 915.300"
+
+# Check for rtl_433 or universal radio hacker
+if command -v rtl_433 &>/dev/null; then
+    echo "[*] Using rtl_433 for Sub-GHz decoding..."
+    echo ""
+
+    case "$FREQ_RANGE" in
+        433*)
+            rtl_433 -f 433920000 -s 1024000 -F json -T 30 2>/dev/null | tee "$LOOT/subghz_433_$TIMESTAMP.json"
+            ;;
+        315*)
+            rtl_433 -f 315000000 -s 1024000 -F json -T 30 2>/dev/null | tee "$LOOT/subghz_315_$TIMESTAMP.json"
+            ;;
+        868*)
+            rtl_433 -f 868000000 -s 1024000 -F json -T 30 2>/dev/null | tee "$LOOT/subghz_868_$TIMESTAMP.json"
+            ;;
+        915*)
+            rtl_433 -f 915000000 -s 1024000 -F json -T 30 2>/dev/null | tee "$LOOT/subghz_915_$TIMESTAMP.json"
+            ;;
+        *)
+            echo "[*] Scanning all common Sub-GHz frequencies..."
+            for freq in $COMMON_FREQS_433 $COMMON_FREQS_315 $COMMON_FREQS_868 $COMMON_FREQS_915; do
+                echo "[*] Scanning ${freq}MHz..."
+                rtl_433 -f "${freq}e6" -s 1024000 -T 10 2>/dev/null | tee -a "$LOOT/subghz_scan_$TIMESTAMP.txt"
+            done
+            ;;
+    esac
+
+elif command -v universaltokkit &>/dev/null; then
+    echo "[*] Using Universal Radio Hacker..."
+    echo "[!] rtl_433 not found. Install with: apt install rtl-433"
+
+elif [ -e /dev/spidev0.0 ] || [ -e /dev/spidev1.0 ]; then
+    echo "[*] SPI device found. Attempting CC1101 scan..."
+    echo "[!] CC1101 Python library required."
+    echo "[!] Install: pip3 install cc1101"
+    echo ""
+
+    if python3 -c "import cc1101" 2>/dev/null; then
+        echo "[*] CC1101 module detected via SPI."
+        echo "[*] Scanning ${FREQ_RANGE}MHz..."
+
+        python3 << PYEOF
+import cc1101, time, sys
+
+try:
+    radio = cc1101.CC1101()
+    radio.reset()
+
+    freq_low, freq_high = "${FREQ_RANGE}".split("-")
+    freq_mhz = float(freq_low)
+
+    print(f"[*] CC1101 initialized. Scanning {freq_low}-{freq_high}MHz...")
+    print(f"[*] Frequency   Signal")
+    print(f"[*] ──────────────────────")
+
+    while freq_mhz <= float(freq_high):
+        try:
+            radio.set_frequency(freq_mhz * 1e6)
+            rssi = radio.get_rssi()
+            if rssi and rssi > -80:
+                print(f"    {freq_mhz:.3f} MHz  {rssi} dBm")
+        except:
+            pass
+        freq_mhz += 0.1
+        time.sleep(0.05)
+
+except Exception as e:
+    print(f"[!] CC1101 error: {e}")
+    print(f"[!] Check wiring and SPI enable: dtoverlay=spi0-1cs in /boot/config.txt")
+    sys.exit(1)
+PYEOF
+    else
+        echo "[!] cc1101 Python package not found."
+        echo "[!] Install: pip3 install cc1101"
+        echo ""
+        echo "[*] Alternative: Use rtl_433 with an RTL-SDR dongle on USB-A:"
+        echo "    apt install rtl-433"
+        echo "    subghz-scan 433-434"
+    fi
+else
+    echo "[!] No Sub-GHz radio hardware detected."
+    echo ""
+    echo "Options:"
+    echo "  1. CC1101 module on SPI expansion port (recommended)"
+    echo "     Wiring: VCC, GND, MOSI, MISO, SCK, CSN, GDO0"
+    echo "  2. RTL-SDR dongle on USB-A port"
+    echo "     Install: apt install rtl-433"
+    echo "  3. YardStick One on USB-A (via rfcat)"
+    echo "     Install: pip3 install rfcat"
+    echo ""
+    echo "Common Sub-GHz frequencies:"
+    echo "  315MHz  — US/Japan garage doors, car key fobs"
+    echo "  433MHz  — EU/Asia garage doors, weather stations, doorbells"
+    echo "  868MHz  — Europe LoRa, smart home devices"
+    echo "  915MHz  — US LoRa, smart home, IoT devices"
+fi

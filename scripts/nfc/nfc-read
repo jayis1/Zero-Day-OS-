@@ -1,0 +1,122 @@
+#!/bin/bash
+# /usr/local/bin/nfc-read
+# Read NFC/RFID tags via PN532 module on the expansion port
+# Usage: nfc-read [output]
+#
+# Wiring (Grove HY2.0-4P — I2C mode):
+#   Pin 1 (VCC) → PN532 VCC
+#   Pin 2 (SDA) → PN532 SDA (I2C data)
+#   Pin 3 (SCL) → PN532 SCL (I2C clock)
+#   Pin 4 (GND) → PN532 GND
+#   Set PN532 switch to I2C mode (switches 1=ON, 2=ON)
+#
+# Wiring (ExtPort 2.54-14P — SPI mode):
+#   Pin 3.3V  → PN532 VCC
+#   Pin GND   → PN532 GND
+#   Pin MOSI  → PN532 MOSI
+#   Pin MISO  → PN532 MISO
+#   Pin SCLK  → PN532 SCK
+#   Pin CE0   → PN532 NSS (SPI select)
+#   Set PN532 switch to SPI mode (switches 1=OFF, 2=ON)
+
+OUTPUT="${1:-}"
+LOOT="/opt/cardputer/loot/rf"
+TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+
+mkdir -p "$LOOT"
+[ -z "$OUTPUT" ] && OUTPUT="$LOOT/nfc_read_${TIMESTAMP}.json"
+
+echo "[*] ZERO-DAY OS — NFC Tag Reader"
+echo ""
+
+if python3 -c "import nfc" 2>/dev/null; then
+    echo "[*] Using nfcpy (I2C/SPI)..."
+    python3 << PYEOF
+import nfc, nfc.tag, json, sys
+
+try:
+    clf = nfc.ContactlessFrontend('tty:S0:pn532')  # UART
+except:
+    try:
+        clf = nfc.ContactlessFrontend('usb')  # USB PN532
+    except:
+        try:
+            # Try I2C via smbus
+            import smbus
+            bus = smbus.SMBus(1)
+            print("[*] Scanning I2C for PN532...")
+            for addr in range(0x03, 0x78):
+                try:
+                    bus.read_byte(addr)
+                    print(f"  Found I2C device at 0x{addr:02x}")
+                except:
+                    pass
+            print("[!] nfcpy could not open PN532 on UART or USB")
+            print("[!] Try setting PN532 to I2C mode and wiring to Grove port")
+            sys.exit(1)
+        except:
+            print("[!] No NFC reader found")
+            sys.exit(1)
+
+print("[*] Waiting for NFC tag... (hold tag near the module)")
+tag = clf.connect(rdrwr=nfc.tag.REMOTE)
+
+if tag is None:
+    print("[!] No tag detected. Try again.")
+    sys.exit(1)
+
+print(f"[+] Tag found: {tag.type}")
+
+tag_data = {
+    "type": str(tag.type),
+    "uid": tag.uid.hex().upper(),
+}
+
+if hasattr(tag, 'ndef') and tag.ndef:
+    print(f"[+] NDEF records: {len(tag.ndef.records)}")
+    records = []
+    for record in tag.ndef.records:
+        records.append({"type": str(record.type), "data": str(record.data)})
+    tag_data["ndef"] = records
+else:
+    print("[*] No NDEF data on this tag")
+
+print(f"[+] UID: {tag.uid.hex().upper()}")
+print(f"[+] Type: {tag.type}")
+
+with open("${OUTPUT}", "w") as f:
+    json.dump(tag_data, f, indent=2)
+print(f"[+] Data saved: ${OUTPUT}")
+print(f"[*] Clone with: nfc-clone {tag.uid.hex().upper()}")
+
+clf.close()
+PYEOF
+
+elif command -v nfc-list &>/dev/null || command -v nfc-poll &>/dev/null; then
+    echo "[*] Using libnfc (nfc-poll)..."
+    echo "[*] Scanning for NFC tags..."
+    nfc-poll 2>/dev/null || nfc-list 2>/dev/null
+
+elif command -v mfoc &>/dev/null; then
+    echo "[*] Using mfoc + pcscd (MIFARE Classic attack)..."
+    echo "[*] Place a MIFARE Classic tag near the reader..."
+    mfoc -O "$LOOT/mfoc_dump_${TIMESTAMP}.mfd" 2>/dev/null
+    if [ -f "$LOOT/mfoc_dump_${TIMESTAMP}.mfd" ]; then
+        echo "[+] MIFARE dump saved: $LOOT/mfoc_dump_${TIMESTAMP}.mfd"
+    fi
+
+else
+    echo "[!] No NFC hardware/software found."
+    echo ""
+    echo "Setup options:"
+    echo "  1. PN532 module on I2C/SPI expansion port (recommended)"
+    echo "     Install: pip3 install nfcpy"
+    echo "     Wiring: Grove port SDA/SCL/VCC/GND (I2C mode)"
+    echo ""
+    echo "  2. ACR122U USB NFC reader on USB-A"
+    echo "     Install: apt install libnfc-bin mfoc pcscd"
+    echo "     Plug into USB-A port"
+    echo ""
+    echo "  3. Proxmark3 on USB-A (advanced)"
+    echo "     Install: apt install proxmark3"
+fi

@@ -1,0 +1,34 @@
+// ST7789v3 LCD Display Overlay for Cardputer Zero
+// NOTE: GPIO pin assignments are PLACEHOLDERS pending M5Stack pinout
+/dts-v1/;
+/plugin/;
+
+/ {
+    compatible = "brcm,bcm2837";
+
+    fragment@0 {
+        target = <&spi0>;
+        __overlay__ {
+            status = "okay";
+            st7789v3: st7789v3@0 {
+                compatible = "sitronix,st7789v3";
+                reg = <0>;
+                spi-max-frequency = <32000000>;
+                rotate = <90>;
+                buswidth = <8>;
+                dc-gpios = <&gpio 25 0>;   // PLACEHOLDER
+                reset-gpios = <&gpio 27 0>; // PLACEHOLDER
+                led-gpios = <&gpio 18 0>;   // PLACEHOLDER
+                fps = <30>;
+                debug = <0>;
+            };
+        };
+    };
+
+    fragment@1 {
+        target = <&spidev0>;
+        __overlay__ {
+            status = "disabled";
+        };
+    };
+};

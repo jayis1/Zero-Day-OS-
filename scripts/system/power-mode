@@ -1,0 +1,114 @@
+#!/bin/bash
+# /usr/local/bin/power-mode
+# Switch CPU governor, core count, and radio profiles
+# Usage: power-mode [performance|balanced|stealth]
+
+MODE="$1"
+
+if [ -z "$MODE" ]; then
+    echo "Usage: power-mode [performance|balanced|stealth]"
+    echo ""
+    CURRENT_GOV=$(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null || echo "unknown")
+    ONLINIED=$(grep -c "1" /sys/devices/system/cpu/cpu*/online 2>/dev/null || echo "?")
+    WIFI=$(ip link show wlan0 2>/dev/null | grep -c "UP" || echo "0")
+    BT=$(rfkill list bluetooth 2>/dev/null | grep -c "not blocked" || echo "0")
+
+    echo "Current status:"
+    echo "  Governor: $CURRENT_GOV"
+    echo "  Cores: $ONLINIED"
+    echo "  WiFi: $([ "$WIFI" -gt 0 ] && echo "UP" || echo "DOWN")"
+    echo "  BT: $([ "$BT" -gt 0 ] && echo "UP" || echo "DOWN")"
+
+    batt=$(cat /sys/class/power_supply/*/capacity 2>/dev/null || echo "?")
+    volt=$(cat /sys/class/power_supply/*/voltage_now 2>/dev/null || echo "?")
+    echo "  Battery: ${batt}% (${volt}mV)"
+    exit 0
+fi
+
+GOV="/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor"
+FREQ_MAX="/sys/devices/system/cpu/cpu0/cpufreq/scaling_max_freq"
+
+check_root() {
+    if [ "$(id -u)" -ne 0 ]; then
+        echo "[!] Root required."
+        exit 1
+    fi
+}
+
+case "$MODE" in
+    performance)
+        check_root
+        echo "[*] Switching to PERFORMANCE mode..."
+        echo "performance" > "$GOV" 2>/dev/null
+        echo "1000000" > "$FREQ_MAX" 2>/dev/null
+
+        for cpu in /sys/devices/system/cpu/cpu[1-3]/online; do
+            echo 1 > "$cpu" 2>/dev/null
+        done
+
+        rfkill unblock all 2>/dev/null
+
+        if [ -d /sys/class/backlight ]; then
+            echo 255 > /sys/class/backlight/*/brightness 2>/dev/null
+        fi
+
+        # Restore Xorg if it was killed
+        if ! pgrep Xorg &>/dev/null && [ -f /etc/X11/xorg.conf ]; then
+            startx &
+        fi
+
+        echo "[+] PERFORMANCE: 1GHz quad, all radios, full brightness"
+        echo "[+] ~4hr battery life"
+        ;;
+
+    balanced)
+        check_root
+        echo "[*] Switching to BALANCED mode..."
+        echo "ondemand" > "$GOV" 2>/dev/null
+        echo "800000" > "$FREQ_MAX" 2>/dev/null
+
+        for cpu in /sys/devices/system/cpu/cpu[2-3]/online; do
+            echo 0 > "$cpu" 2>/dev/null
+        done
+
+        rfkill unblock wifi 2>/dev/null
+        rfkill block bluetooth 2>/dev/null
+
+        if [ -d /sys/class/backlight ]; then
+            echo 180 > /sys/class/backlight/*/brightness 2>/dev/null
+        fi
+
+        echo "[+] BALANCED: 800MHz dual-core, WiFi on, BT off, medium brightness"
+        echo "[+] ~6hr battery life"
+        ;;
+
+    stealth)
+        check_root
+        echo "[*] Switching to STEALTH mode..."
+        echo "powersave" > "$GOV" 2>/dev/null
+        echo "600000" > "$FREQ_MAX" 2>/dev/null
+
+        for cpu in /sys/devices/system/cpu/cpu[1-3]/online; do
+            echo 0 > "$cpu" 2>/dev/null
+        done
+
+        rfkill block all 2>/dev/null
+
+        if [ -d /sys/class/backlight ]; then
+            echo 80 > /sys/class/backlight/*/brightness 2>/dev/null
+        fi
+
+        echo "[+] STEALTH: 600MHz single-core, no radios, dim screen"
+        echo "[+] ~10hr battery life"
+        echo "[+] No RF emissions"
+        ;;
+
+    *)
+        echo "[!] Unknown mode: $MODE"
+        echo "Available: performance, balanced, stealth"
+        exit 1
+        ;;
+esac
+
+# Log the mode change
+echo "$(date '+%Y-%m-%d %H:%M:%S') power-mode: $MODE" >> /opt/cardputer/panic.log

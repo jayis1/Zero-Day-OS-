@@ -1,0 +1,12 @@
+[Unit]
+Description=ZERO-DAY OS Boot Orchestration
+After=multi-user.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/zeroday-boot
+
+[Install]
+WantedBy=multi-user.target

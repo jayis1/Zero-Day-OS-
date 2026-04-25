@@ -1,0 +1,10 @@
+# Network tools — scanning, tunneling, packet crafting
+nmap
+netcat-openbsd
+socat
+tcpdump
+dnsutils
+ethtool
+python3-scapy
+python3-serial
+jq

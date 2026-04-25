@@ -1,0 +1,154 @@
+#!/bin/bash
+# /usr/local/bin/ragnar-scan
+# Lightweight autonomous network scanner inspired by Ragnar (https://github.com/PierreGode/Ragnar)
+# Orchestrates ZERO-DAY OS tools in an automated scan loop
+# Uses only bash + existing tools — runs in <50MB RAM
+#
+# Usage: ragnar-scan [interface] [mode]
+#   interface  — Network interface (default: auto-detect)
+#   mode       — quick | full | vuln | stealth (default: quick)
+
+INTERFACE="${1:-auto}"
+MODE="${2:-quick}"
+TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+LOOT="/opt/cardputer/loot/ragnar"
+mkdir -p "$LOOT"
+
+echo "╔══════════════════════════════════════════════════╗"
+echo "║       RAGNAR-SCAN — Autonomous Reconnaissance    ║"
+echo "║       Inspired by github.com/PierreGode/Ragnar   ║"
+echo "╚══════════════════════════════════════════════════╝"
+echo ""
+
+# Auto-detect interface
+if [ "$INTERFACE" = "auto" ]; then
+    # Prefer eth0, then wlan0
+    for iface in eth0 wlan0 en0; do
+        if ip link show "$iface" &>/dev/null; then
+            INTERFACE="$iface"
+            break
+        fi
+    done
+    if [ "$INTERFACE" = "auto" ]; then
+        echo "[!] No network interface found. Specify manually:"
+        echo "    ragnar-scan eth0"
+        echo "    ragnar-scan wlan0 quick"
+        exit 1
+    fi
+fi
+
+echo "[*] Interface: $INTERFACE"
+echo "[*] Mode:      $MODE"
+echo "[*] Output:    $LOOT/"
+echo ""
+
+# Get our IP and subnet
+OUR_IP=$(ip -4 addr show "$INTERFACE" 2>/dev/null | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | head -1)
+SUBNET=$(echo "$OUR_IP" | sed 's/\.[0-9]*$/.0\/24/')
+
+if [ -z "$OUR_IP" ]; then
+    echo "[!] No IP address on $INTERFACE"
+    exit 1
+fi
+
+echo "[*] Our IP: $OUR_IP"
+echo "[*] Subnet: $SUBNET"
+echo ""
+
+# Phase 1: Network Discovery
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "  PHASE 1: Network Discovery"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo ""
+
+DISCOVER_FILE="${LOOT}/discover_${TIMESTAMP}.txt"
+sudo net-discover "$INTERFACE" > "$DISCOVER_FILE" 2>&1
+HOST_COUNT=$(grep -c "up" "$DISCOVER_FILE" 2>/dev/null || echo "?")
+
+echo "[+] Discovered hosts: $HOST_COUNT"
+echo "[+] Results: $DISCOVER_FILE"
+echo ""
+
+# Phase 2: Port Scanning
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "  PHASE 2: Port Scanning"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo ""
+
+# Extract live host IPs from discovery
+HOSTS=$(grep -oP '\d+(\.\d+){3}' "$DISCOVER_FILE" 2>/dev/null | sort -u | grep -v "^${OUR_IP}$")
+
+if [ -z "$HOSTS" ]; then
+    echo "[!] No live hosts found beyond our IP"
+    echo "[*] Scanning common targets anyway..."
+    HOSTS="192.168.1.1"
+fi
+
+SCAN_FILE="${LOOT}/nmap_${TIMESTAMP}"
+
+for host in $HOSTS; do
+    echo "[*] Scanning $host..."
+    case "$MODE" in
+        quick)
+            net-quickscan "$host" quick > "${SCAN_FILE}_${host}.txt" 2>&1
+            ;;
+        full)
+            net-quickscan "$host" full > "${SCAN_FILE}_${host}.txt" 2>&1
+            ;;
+        vuln)
+            sudo net-vulnscan "$host" > "${SCAN_FILE}_${host}_vuln.txt" 2>&1
+            ;;
+        stealth)
+            net-quickscan "$host" stealth > "${SCAN_FILE}_${host}.txt" 2>&1
+            ;;
+        *)
+            net-quickscan "$host" quick > "${SCAN_FILE}_${host}.txt" 2>&1
+            ;;
+    esac
+    echo "[+] $host scan complete"
+done
+
+echo ""
+
+# Phase 3: Service Summary
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "  PHASE 3: Service Summary"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo ""
+
+SUMMARY_FILE="${LOOT}/summary_${TIMESTAMP}.txt"
+
+{
+    echo "= RAGNAR-SCAN SUMMARY ="
+    echo "Date: $(date '+%Y-%m-%d %H:%M:%S')"
+    echo "Interface: $INTERFACE"
+    echo "Our IP: $OUR_IP"
+    echo "Subnet: $SUBNET"
+    echo "Mode: $MODE"
+    echo ""
+    echo "== LIVE HOSTS ="
+    for host in $HOSTS; do
+        echo "  $host"
+    done
+    echo ""
+    echo "== OPEN PORTS ="
+    cat "${SCAN_FILE}"*.txt 2>/dev/null | grep -i "open" | sort -u || echo "  (none found)"
+    echo ""
+    echo "== FILES ="
+    echo "  Discovery: $DISCOVER_FILE"
+    for host in $HOSTS; do
+        [ -f "${SCAN_FILE}_${host}.txt" ] && echo "  Scan $host: ${SCAN_FILE}_${host}.txt"
+        [ -f "${SCAN_FILE}_${host}_vuln.txt" ] && echo "  Vuln $host: ${SCAN_FILE}_${host}_vuln.txt"
+    done
+} > "$SUMMARY_FILE"
+
+cat "$SUMMARY_FILE"
+
+echo ""
+echo "[+] Full results in: $LOOT/"
+echo "[+] Summary: $SUMMARY_FILE"
+echo ""
+echo "[*] To query threat intelligence for discovered hosts:"
+echo "    threat-intel <CVE-ID>           — Look up a specific CVE"
+echo "    threat-intel search <keyword>    — Search CISA KEV database"
+echo "    threat-intel check <ip> <port>  — Check known vulns for a service"

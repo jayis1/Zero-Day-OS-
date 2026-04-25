@@ -1,0 +1,18 @@
+# Stage 1 — Base packages (Debian armhf)
+# RPi-specific packages (raspberrypi-bootloader, raspberrypi-kernel, linux-image-rpi)
+# are NOT available from deb.debian.org and will be installed in stage3
+# once the RPi apt repository is properly configured.
+# Firmware packages in Bookworm require the non-free-firmware component.
+ca-certificates
+dnsmasq
+dosfstools
+firmware-brcm80211
+firmware-misc-nonfree
+firmware-realtek
+initramfs-tools
+iw
+libnss-mdns
+parted
+rfkill
+ssh
+wpasupplicant

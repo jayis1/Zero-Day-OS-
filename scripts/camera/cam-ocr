@@ -1,0 +1,44 @@
+#!/bin/bash
+# /usr/local/bin/cam-ocr
+# Capture image + run Tesseract OCR
+# Usage: cam-ocr [output]
+
+LOOT="/opt/cardputer/loot/cam"
+TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+
+mkdir -p "$LOOT"
+
+CAPTURE="$LOOT/ocr_snap_${TIMESTAMP}.jpg"
+OUTPUT="${1:-$LOOT/ocr_result_${TIMESTAMP}.txt}"
+
+echo "[*] ZERO-DAY OS — Camera OCR"
+echo ""
+
+cam-snap "$CAPTURE" || {
+    echo "[!] Camera snap failed"
+    exit 1
+}
+
+echo "[*] Running OCR on $CAPTURE..."
+
+if command -v tesseract &>/dev/null; then
+    tesseract "$CAPTURE" "${OUTPUT%.txt}" 2>/dev/null
+
+    if [ -f "${OUTPUT%.txt}.txt" ]; then
+        mv "${OUTPUT%.txt}.txt" "$OUTPUT" 2>/dev/null
+    fi
+
+    if [ -f "$OUTPUT" ]; then
+        echo "[+] OCR result:"
+        echo "==========================================="
+        cat "$OUTPUT"
+        echo "==========================================="
+        echo ""
+        echo "[+] Full result saved: $OUTPUT"
+    else
+        echo "[!] OCR produced no output"
+    fi
+else
+    echo "[!] Tesseract not installed"
+    echo "[!] apt install tesseract-ocr"
+fi

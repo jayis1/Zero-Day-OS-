@@ -1,0 +1,134 @@
+#!/bin/bash
+# /usr/local/bin/usb-gadget-mode
+# Switch USB-C between Host and Device modes
+# Usage: usb-gadget-mode [hid|serial|ncm|mass|off]
+# NOTE: Physical USB_SW switch must be in 'Device' position
+
+MODE="$1"
+
+if [ "$(id -u)" -ne 0 ]; then
+    echo "[!] Root required."
+    exit 1
+fi
+
+if [ -z "$MODE" ]; then
+    echo "Usage: usb-gadget-mode [hid|serial|ncm|mass|off]"
+    echo ""
+    echo "  hid     — USB keyboard (Rubber Ducky mode)"
+    echo "             Execute payloads from /opt/cardputer/payloads/ducky.txt"
+    echo "  serial  — USB serial console (debug/ssh bridge)"
+    echo "  ncm     — USB network (share internet with host)"
+    echo "  mass    — USB mass storage (exfiltrate data)"
+    echo "  off     — Disable gadget mode, return to host"
+    echo ""
+    echo "NOTE: Physical USB_SW switch must be in 'Device' position on the board"
+    exit 0
+fi
+
+cleanup_gadget() {
+    local GADGET_DIR="/sys/kernel/config/usb_gadget/zeroday"
+    if [ -d "$GADGET_DIR" ]; then
+        echo "" > "$GADGET_DIR/UDC" 2>/dev/null
+        for cfg in "$GADGET_DIR/configs"/b.*; do
+            for link in "$cfg"/*; do
+                [ -L "$link" ] && rm "$link" 2>/dev/null
+            done
+            [ -d "$cfg" ] && rmdir "$cfg" 2>/dev/null
+        done
+        for func in "$GADGET_DIR/functions"/*; do
+            [ -d "$func" ] && rmdir "$func" 2>/dev/null
+        done
+        for str_dir in "$GADGET_DIR/strings"/*/*; do
+            [ -d "$str_dir" ] && rmdir "$str_dir" 2>/dev/null
+        done
+        rmdir "$GADGET_DIR/strings/0x409" 2>/dev/null
+        rmdir "$GADGET_DIR" 2>/dev/null
+    fi
+    rmmod g_serial g_ncm g_mass_storage libcomposite 2>/dev/null
+}
+
+case "$MODE" in
+    hid)
+        cleanup_gadget
+        modprobe libcomposite 2>/dev/null
+
+        GADGET="/sys/kernel/config/usb_gadget/zeroday"
+        mkdir -p "$GADGET"
+        cd "$GADGET"
+
+        echo "0x1d6b" > idVendor
+        echo "0x0104" > idProduct
+        echo "0x0100" > bcdDevice
+        echo "0x0200" > bcdUSB
+
+        mkdir -p strings/0x409
+        echo "0123456789" > strings/0x409/serialnumber
+        echo "zeroday-os" > strings/0x409/manufacturer
+        echo "Cardputer Zero" > strings/0x409/product
+
+        mkdir -p functions/hid.usb0
+        echo 1 > functions/hid.usb0/protocol
+        echo 1 > functions/hid.usb0/subclass
+        echo 8 > functions/hid.usb0/report_length
+
+        printf '\x05\x01\x09\x06\xa1\x01\x05\x07\x19\xe0\x29\xe7\x15\x00\x25\x01\x75\x01\x95\x08\x81\x02\x95\x01\x75\x08\x81\x01\x95\x05\x75\x01\x05\x08\x19\x01\x29\x05\x91\x02\x95\x01\x75\x03\x91\x01\x95\x06\x75\x08\x15\x00\x25\x65\x05\x07\x19\x00\x29\x65\x81\x00\xc0' > functions/hid.usb0/report_desc
+
+        mkdir -p configs/c.1/strings/0x409
+        echo "HID" > configs/c.1/strings/0x409/configuration
+        ln -s functions/hid.usb0 configs/c.1/
+
+        UDC=$(ls /sys/class/udc | head -1)
+        [ -n "$UDC" ] && echo "$UDC" > UDC
+
+        echo "[+] USB HID keyboard mode active"
+        echo "[*] Execute payload: ducky-exec /opt/cardputer/payloads/ducky.txt"
+        echo "[*] Or send keystrokes via /dev/hidg0"
+        ;;
+
+    serial)
+        cleanup_gadget
+        modprobe g_serial 2>/dev/null
+        echo "[+] USB serial mode active on /dev/ttyGS0"
+        echo "[*] Connect from host: screen /dev/ttyACM0 115200"
+        echo "[*] Or: minicom -D /dev/ttyACM0"
+        ;;
+
+    ncm)
+        cleanup_gadget
+        modprobe g_ncm 2>/dev/null
+        sleep 1
+        ip addr add 10.0.0.1/24 dev usb0 2>/dev/null
+        ip link set usb0 up 2>/dev/null
+        echo 1 > /proc/sys/net/ipv4/ip_forward 2>/dev/null
+        echo "[+] USB network mode active"
+        echo "[*] Cardputer Zero IP: 10.0.0.1"
+        echo "[*] Host should get IP via DHCP or set: ifconfig usb0 10.0.0.2 netmask 255.255.255.0"
+        ;;
+
+    mass)
+        cleanup_gadget
+        BACKING="/opt/cardputer/usbgadget.img"
+        mkdir -p /opt/cardputer
+        if [ ! -f "$BACKING" ]; then
+            echo "[*] Creating 256MB backing image..."
+            dd if=/dev/zero of="$BACKING" bs=1M count=256 status=progress
+            mkfs.vfat "$BACKING"
+        fi
+        modprobe g_mass_storage file="$BACKING" stall=0 ro=0 2>/dev/null
+        echo "[+] USB mass storage mode active"
+        echo "[*] Host will see a 256MB FAT32 drive"
+        echo "[*] Data written to the drive appears in /opt/cardputer/usbgadget.img"
+        ;;
+
+    off)
+        cleanup_gadget
+        echo "[+] Gadget mode disabled. USB returned to host mode."
+        echo "[*] Flip USB_SW switch back to 'Host' position"
+        ;;
+
+    *)
+        echo "[!] Unknown mode: $MODE"
+        echo "Available: hid, serial, ncm, mass, off"
+        exit 1
+        ;;
+esac

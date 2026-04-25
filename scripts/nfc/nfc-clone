@@ -1,0 +1,109 @@
+#!/bin/bash
+# /usr/local/bin/nfc-clone
+# Clone a NFC/RFID tag by UID or from a dump file
+# Usage: nfc-clone <uid_or_dump> [output]
+#
+# WARNING: Only clone tags you own. Cloning access cards or
+# payment cards without authorization is illegal.
+#
+# Supported tag types:
+#   - MIFARE Classic 1K/4K
+#   - MIFARE Ultralight
+#   - NTAG213/215/216
+#   - EM4100 (125kHz via addon reader)
+
+INPUT="${1:-}"
+OUTPUT="${2:-}"
+LOOT="/opt/cardputer/loot/rf"
+TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+
+mkdir -p "$LOOT"
+
+if [ -z "$INPUT" ]; then
+    echo "Usage: nfc-clone <uid_or_dump> [output]"
+    echo ""
+    echo "Clone a NFC tag by UID (creates blank clone) or from a dump file."
+    echo ""
+    echo "Options:"
+    echo "  nfc-clone AA:BB:CC:DD       — Clone by UID (creates blank tag with same UID)"
+    echo "  nfc-clone dump.mfd           — Clone from MIFARE Classic dump file"
+    echo ""
+    echo "WARNING: Only clone tags you own or are authorized to copy."
+    echo ""
+    echo "Available dumps:"
+    ls -la "$LOOT"/*.mfd "$LOOT"/*.json 2>/dev/null || echo "  (none)"
+    exit 1
+fi
+
+echo "[*] ZERO-DAY OS — NFC Tag Cloner"
+echo "[*] Input: $INPUT"
+echo ""
+
+if [ "$(id -u)" -ne 0 ]; then
+    echo "[!] Root required for NFC operations."
+    exit 1
+fi
+
+# Check if input is a UID (hex with colons) or a file
+if echo "$INPUT" | grep -qE '^([0-9A-Fa-f]{2}:){3,7}[0-9A-Fa-f]{2}$'; then
+    # Input is a UID
+    UID_CLEAN=$(echo "$INPUT" | tr -d ':')
+    echo "[*] Cloning UID: $INPUT ($UID_CLEAN)"
+    echo "[*] Place a writable blank tag near the writer..."
+    echo ""
+
+    if command -v nfc-mfultralight &>/dev/null; then
+        echo "[*] Using nfc-mfultralight..."
+        # Write UID to blank NTAG/Ultralight
+        nfc-mfultralight w "$INPUT" 2>/dev/null
+        echo "[+] Tag cloned with UID: $INPUT"
+
+    elif command -v pm3 &>/dev/null; then
+        echo "[*] Using Proxmark3..."
+        pm3 -c "hf mf csetuid $INPUT" 2>/dev/null || \
+        pm3 -c "hf mf eclr; hf mf eload $INPUT; hf mf esave" 2>/dev/null
+        echo "[+] Tag cloned with UID: $INPUT"
+
+    else
+        echo "[!] No NFC writer found."
+        echo "[!] Install one of:"
+        echo "    PN532:      pip3 install nfcpy"
+        echo "    Proxmark3:  apt install proxmark3"
+        echo ""
+        echo "[*] UID to program: $INPUT"
+        echo "[*] Hex (no colons): $UID_CLEAN"
+    fi
+
+elif [ -f "$INPUT" ]; then
+    # Input is a dump file
+    echo "[*] Cloning from dump file: $INPUT"
+    echo "[*] Place a writable blank tag near the writer..."
+    echo ""
+
+    if command -v mfoc &>/dev/null; then
+        echo "[*] Using mfoc + nfc-mfclassic..."
+        nfc-mfclassic w a "$INPUT" 2>/dev/null
+        echo "[+] Tag cloned from dump: $INPUT"
+
+    elif command -v pm3 &>/dev/null; then
+        echo "[*] Using Proxmark3..."
+        pm3 -c "hf mf eclr" 2>/dev/null
+        pm3 -c "hf mf eload $INPUT" 2>/dev/null
+        pm3 -c "hf mf esave" 2>/dev/null
+        echo "[+] Tag cloned from dump: $INPUT"
+
+    else
+        echo "[!] No NFC writer found."
+        echo "[!] Install: apt install libnfc-bin mfoc proxmark3"
+    fi
+
+else
+    echo "[!] Input '$INPUT' is not a valid UID or file."
+    echo "[!] UID format: AA:BB:CC:DD or AA:BB:CC:DD:EE:FF:GG"
+    echo "[!] File format: .mfd dump from nfc-read or mfoc"
+    exit 1
+fi
+
+echo ""
+echo "[!] Remember: only clone tags you are authorized to copy."
+echo "[*] Emulate with: nfc-emulate $INPUT"

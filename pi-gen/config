@@ -1,0 +1,42 @@
+# ZERO-DAY OS — pi-gen Build Configuration
+# Copy this file to 'config' and modify as needed
+
+IMG_NAME="zeroday-os"
+RELEASE="bookworm"
+ARCH="armhf"
+
+# Target hostname
+TARGET_HOSTNAME="zeroday"
+
+# Default user — root is the primary user for this pentest OS
+FIRST_USER_NAME="root"
+FIRST_USER_PASS="zeroday"
+DISABLE_FIRST_BOOT_USER_RENAME="1"
+PASSWORDLESS_SUDO="1"
+
+# Locale
+LOCALE_DEFAULT="en_US.UTF-8"
+KEYBOARD_KEYMAP="us"
+KEYBOARD_LAYOUT="English (US)"
+TIMEZONE_DEFAULT="UTC"
+
+# SSH — enabled by default for headless access
+ENABLE_SSH="2"
+
+# Cloud-init — disabled (not needed for pentest OS)
+ENABLE_CLOUD_INIT="0"
+
+# Build output
+DEPLOY_COMPRESSION="zip"
+COMPRESSION_LEVEL="6"
+
+# Docker build settings
+CONTAINER_NAME="zeroday_pigen"
+PRESERVE_CONTAINER="1"
+
+# APT proxy (uncomment and set if behind a proxy)
+# APT_PROXY="http://proxy:3142/"
+
+# WPA WiFi config (leave empty to skip WiFi configuration)
+# WPA_COUNTRY="US"
+# WPA_PASSWORD=""

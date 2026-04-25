@@ -1,0 +1,215 @@
+#!/bin/bash
+# /usr/local/bin/threat-intel
+# Lightweight CVE/CISA KEV threat intelligence lookup
+# No heavy Python dependencies — uses curl + jq against public APIs
+#
+# Usage: threat-intel <command> [args]
+#   cve <CVE-ID>              — Look up a specific CVE
+#   search <keyword>          — Search CISA Known Exploited Vulnerabilities
+#   check <service> <version>  — Check known vulns for a service version
+#   recent                    — Show recent CISA KEV additions
+#   cwe <CWE-ID>              — Look up a CWE weakness classification
+
+TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+LOOT="/opt/cardputer/loot/threat-intel"
+mkdir -p "$LOOT"
+
+echo "[*] ZERO-DAY OS — Threat Intelligence Lookup"
+echo ""
+
+COMMAND="${1:-help}"
+
+case "$COMMAND" in
+    cve)
+        CVE_ID="${2:-}"
+        if [ -z "$CVE_ID" ]; then
+            echo "Usage: threat-intel cve <CVE-ID>"
+            echo "Example: threat-intel cve CVE-2024-21762"
+            exit 0
+        fi
+        # Normalize CVE ID
+        CVE_ID=$(echo "$CVE_ID" | tr 'a-z' 'A-Z' | sed 's/CVE-//;s/^/CVE-/')
+        echo "[*] Looking up ${CVE_ID}..."
+        echo ""
+
+        # NVD API (public, no key needed, rate-limited)
+        RESULT=$(curl -s "https://services.nvd.nist.gov/rest/json/cves/2.0?cveId=${CVE_ID}" 2>/dev/null)
+
+        if [ -z "$RESULT" ]; then
+            echo "[!] No response from NVD API"
+            exit 1
+        fi
+
+        # Parse with jq if available
+        if command -v jq &>/dev/null; then
+            DESCRIPTION=$(echo "$RESULT" | jq -r '.vulnerabilities[0].cve.descriptions[0].value // "No description available"' 2>/dev/null)
+            SEVERITY=$(echo "$RESULT" | jq -r '.vulnerabilities[0].cve.metrics.cvssMetricV31[0].cvssData.baseSeverity // "Unknown"' 2>/dev/null)
+            SCORE=$(echo "$RESULT" | jq -r '.vulnerabilities[0].cve.metrics.cvssMetricV31[0].cvssData.baseScore // "N/A"' 2>/dev/null)
+            VECTOR=$(echo "$RESULT" | jq -r '.vulnerabilities[0].cve.metrics.cvssMetricV31[0].cvssData.attackVector // "N/A"' 2>/dev/null)
+            COMPLEXITY=$(echo "$RESULT" | jq -r '.vulnerabilities[0].cve.metrics.cvssMetricV31[0].cvssData.attackComplexity // "N/A"' 2>/dev/null)
+
+            echo "  CVE:        $CVE_ID"
+            echo "  Severity:   $SEVERITY ($SCORE)"
+            echo "  Vector:     $VECTOR"
+            echo "  Complexity:  $COMPLEXITY"
+            echo ""
+            echo "  Description:"
+            echo "  $DESCRIPTION"
+        else
+            # Fallback: raw JSON output
+            echo "$RESULT" | head -20
+            echo ""
+            echo "[*] Install jq for formatted output: apt install jq"
+        fi
+
+        # Save to loot
+        echo "$RESULT" > "${LOOT}/cve_${CVE_ID}_${TIMESTAMP}.json"
+        echo ""
+        echo "[+] Saved to: ${LOOT}/cve_${CVE_ID}_${TIMESTAMP}.json"
+        ;;
+
+    search)
+        KEYWORD="${2:-}"
+        if [ -z "$KEYWORD" ]; then
+            echo "Usage: threat-intel search <keyword>"
+            echo "Example: threat-intel search fortigate"
+            echo "         threat-intel search rce"
+            exit 0
+        fi
+        echo "[*] Searching CISA KEV for: $KEYWORD"
+        echo ""
+
+        # CISA KEV catalog (JSON)
+        KEV_URL="https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json"
+        KEV_FILE="${LOOT}/cisa_kev_catalog.json"
+
+        # Download/update KEV catalog (cache for 24 hours)
+        if [ ! -f "$KEV_FILE" ] || [ $(find "$KEV_FILE" -mmin +1440 2>/dev/null) ]; then
+            echo "[*] Downloading CISA KEV catalog..."
+            curl -sL "$KEV_URL" -o "$KEV_FILE" 2>/dev/null
+        fi
+
+        if [ ! -f "$KEV_FILE" ]; then
+            echo "[!] Failed to download KEV catalog"
+            exit 1
+        fi
+
+        if command -v jq &>/dev/null; then
+            MATCHES=$(jq -r "[.vulnerabilities[] | select(.vulnerabilityName | test(\"$KEYWORD\"; \"i\")) or select(.cveID | test(\"$KEYWORD\"; \"i\")) or select(.product | test(\"$KEYWORD\"; \"i\"))] | length" "$KEV_FILE" 2>/dev/null)
+            echo "[+] Found $MATCHES matching vulnerabilities"
+            echo ""
+
+            jq -r ".vulnerabilities[] | select(.vulnerabilityName | test(\"$KEYWORD\"; \"i\")) or select(.cveID | test(\"$KEYWORD\"; \"i\")) or select(.product | test(\"$KEYWORD\"; \"i\")) | \"\(.cveID) | \(.vulnerabilityName) | \(.product) | \(.severity) | \(.dateAdded)\"" "$KEV_FILE" 2>/dev/null | head -30
+
+            echo ""
+            echo "[*] Showing first 30 results. Use 'threat-intel cve <ID>' for details."
+        else
+            echo "[!] jq is required for search. Install with: apt install jq"
+        fi
+        ;;
+
+    check)
+        SERVICE="${2:-}"
+        VERSION="${3:-}"
+        if [ -z "$SERVICE" ]; then
+            echo "Usage: threat-intel check <service> [version]"
+            echo "Example: threat-intel check openssh 8.2"
+            echo "         threat-intel check apache"
+            exit 0
+        fi
+
+        echo "[*] Checking known vulnerabilities for: $SERVICE ${VERSION:-"(any version)"}"
+        echo ""
+
+        # Search CISA KEV
+        KEV_FILE="${LOOT}/cisa_kev_catalog.json"
+        if [ -f "$KEV_FILE" ] && command -v jq &>/dev/null; then
+            echo "=== CISA Known Exploited Vulnerabilities ==="
+            jq -r ".vulnerabilities[] | select(.product | test(\"$SERVICE\"; \"i\")) | \"\(.cveID) | \(.vulnerabilityName) | \(.severity)\"" "$KEV_FILE" 2>/dev/null | head -20
+            echo ""
+        fi
+
+        # Quick NVD search
+        echo "=== Recent CVEs (NVD) ==="
+        NVD_RESULT=$(curl -s "https://services.nvd.nist.gov/rest/json/cves/2.0?keywordSearch=${SERVICE}&resultsPerPage=10" 2>/dev/null)
+        if command -v jq &>/dev/null && [ -n "$NVD_RESULT" ]; then
+            echo "$NVD_RESULT" | jq -r '.vulnerabilities[]? | "\(.cve.id) | \(.cve.descriptions[0].value[0:120]) | \(.cve.metrics.cvssMetricV31[0].cvssData.baseSeverity // "N/A")"' 2>/dev/null | head -10
+        else
+            echo "[!] Install jq for formatted output: apt install jq"
+        fi
+
+        echo ""
+        echo "[+] For deep analysis, run: sudo net-vulnscan <target>"
+        ;;
+
+    recent)
+        echo "[*] Fetching recent CISA KEV additions..."
+        echo ""
+
+        KEV_FILE="${LOOT}/cisa_kev_catalog.json"
+        if [ ! -f "$KEV_FILE" ]; then
+            curl -sL "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json" -o "$KEV_FILE" 2>/dev/null
+        fi
+
+        if command -v jq &>/dev/null && [ -f "$KEV_FILE" ]; then
+            echo "  Most recently added vulnerabilities:"
+            jq -r '.vulnerabilities | sort_by(.dateAdded) | reverse | .[0:20] | .[] | "\(.dateAdded) | \(.cveID) | \(.vulnerabilityName) | \(.product)"' "$KEV_FILE" 2>/dev/null
+        else
+            echo "[!] jq required. Install with: apt install jq"
+        fi
+        ;;
+
+    cwe)
+        CWE_ID="${2:-}"
+        if [ -z "$CWE_ID" ]; then
+            echo "Usage: threat-intel cwe <CWE-ID>"
+            echo "Example: threat-intel cwe CWE-79"
+            exit 0
+        fi
+        CWE_ID=$(echo "$CWE_ID" | tr 'a-z' 'A-Z' | sed 's/CWE-//;s/^/CWE-/')
+        echo "[*] Looking up ${CWE_ID}..."
+        echo ""
+
+        # MITRE CWE API
+        RESULT=$(curl -s "https://cwe.mitre.org/data/graphs/${CWE_ID}.html" 2>/dev/null | head -5)
+        echo "  CWE: $CWE_ID"
+        echo "  Details: https://cwe.mitre.org/data/definitions/${CWE_ID#CWE-}.html"
+        echo ""
+        echo "[*] Open the URL above for full weakness classification."
+        ;;
+
+    help|--help|-h)
+        echo "Usage: threat-intel <command> [args]"
+        echo ""
+        echo "Lightweight CVE/CISA KEV threat intelligence lookup"
+        echo "No heavy dependencies — uses curl + jq against public APIs"
+        echo ""
+        echo "Commands:"
+        echo "  cve <CVE-ID>              Look up a specific CVE (e.g., CVE-2024-21762)"
+        echo "  search <keyword>          Search CISA Known Exploited Vulnerabilities"
+        echo "  check <service> [version]  Check known vulns for a service"
+        echo "  recent                    Show 20 most recent CISA KEV additions"
+        echo "  cwe <CWE-ID>              Look up a CWE weakness classification"
+        echo ""
+        echo "Examples:"
+        echo "  threat-intel cve CVE-2024-21762"
+        echo "  threat-intel search fortigate"
+        echo "  threat-intel check openssh 8.2"
+        echo "  threat-intel recent"
+        echo ""
+        echo "Data sources:"
+        echo "  NVD (NIST) — https://nvd.nist.gov/vuln/data-feeds"
+        echo "  CISA KEV   — https://www.cisa.gov/known-exploited-vulnerabilities-catalog"
+        echo "  MITRE CWE  — https://cwe.mitre.org/"
+        echo ""
+        echo "For full Ragnar experience with AI analysis, web UI, and advanced"
+        echo "vuln scanning, run Ragnar on a machine with 8GB+ RAM:"
+        echo "  https://github.com/PierreGode/Ragnar"
+        ;;
+
+    *)
+        echo "[!] Unknown command: $COMMAND"
+        echo "[*] Run 'threat-intel help' for usage."
+        exit 1
+        ;;
+esac

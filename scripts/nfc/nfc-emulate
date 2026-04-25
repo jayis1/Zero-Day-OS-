@@ -1,0 +1,110 @@
+#!/bin/bash
+# /usr/local/bin/nfc-emulate
+# Emulate a NFC/RFID tag — make the Cardputer Zero act as a tag
+# Usage: nfc-emulate <uid_or_type> [duration]
+#
+# Types: mifare, ntag, em4100
+# Duration: seconds (0 = until Ctrl+C)
+#
+# WARNING: Only emulate tags you are authorized to use.
+# Emulating access badges you don't own is illegal.
+
+INPUT="${1:-mifare}"
+DURATION="${2:-0}"
+LOOT="/opt/cardputer/loot/rf"
+
+echo "[*] ZERO-DAY OS — NFC Tag Emulator"
+echo "[*] Type/UID: $INPUT"
+echo ""
+
+if [ "$(id -u)" -ne 0 ]; then
+    echo "[!] Root required."
+    exit 1
+fi
+
+# Parse input
+case "$INPUT" in
+    mifare|MIFARE|classic)
+        echo "[*] Emulating MIFARE Classic 1K (default UID)"
+        echo "[*] Hold the device near a reader..."
+        UID="01:02:03:04"
+        TYPE="mifare"
+        ;;
+    ntag|NTAG|ntag213|ntag215|ntag216)
+        echo "[*] Emulating NTAG215..."
+        UID="04:01:02:03:04:05:06"
+        TYPE="ntag"
+        ;;
+    em4100|EM4100|em|125k)
+        echo "[*] Emulating EM4100 (125kHz)..."
+        UID="01:02:03:04:05"
+        TYPE="em4100"
+        ;;
+    *)
+        # Assume it's a UID
+        UID="$INPUT"
+        TYPE="custom"
+        echo "[*] Emulating custom UID: $UID"
+        ;;
+esac
+
+echo "[+] Emulating UID: $UID"
+echo "[+] Type: $TYPE"
+echo ""
+
+if command -v pm3 &>/dev/null; then
+    echo "[*] Using Proxmark3..."
+    case "$TYPE" in
+        mifare)
+            pm3 -c "hf mf simu uid $UID" 2>/dev/null &
+            ;;
+        ntag)
+            pm3 -c "hf mf simu u $UID" 2>/dev/null &
+            ;;
+        em4100)
+            pm3 -c "lf em 410x simu uid $UID" 2>/dev/null &
+            ;;
+        custom)
+            pm3 -c "hf mf simu uid $UID" 2>/dev/null &
+            ;;
+    esac
+
+elif python3 -c "import nfc" 2>/dev/null; then
+    echo "[*] Using nfcpy emulator..."
+    python3 << PYEOF
+import nfc, time
+
+class TagEmulator(nfc.tag.TagEmulator):
+    def __init__(self, uid):
+        self.uid = uid
+
+try:
+    clf = nfc.ContactlessFrontend('tty:S0:pn532')
+    print(f"[*] Emulating {self.uid}... Press Ctrl+C to stop")
+    clf.connect(rdwr={'on-connect': lambda tag: print(f"[+] Reader detected: {tag}")})
+except KeyboardInterrupt:
+    print("[*] Emulation stopped.")
+except Exception as e:
+    print(f"[!] Emulation error: {e}")
+PYEOF
+
+else
+    echo "[!] No NFC emulator hardware found."
+    echo "[!] Install one of:"
+    echo "    Proxmark3 (USB-A): apt install proxmark3"
+    echo "    PN532 (expansion):  pip3 install nfcpy"
+    echo ""
+    echo "[*] UID to emulate: $UID"
+    echo "[*] Hold a blank tag on a writer to clone this UID manually."
+    exit 1
+fi
+
+if [ "$DURATION" -gt 0 ]; then
+    echo "[*] Emulating for $DURATION seconds..."
+    sleep "$DURATION"
+    echo "[*] Emulation complete."
+else
+    echo "[*] Emulating indefinitely. Press Ctrl+C to stop."
+    echo "[!] Remember: only emulate tags you are authorized to use."
+    wait
+fi

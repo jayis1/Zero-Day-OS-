@@ -1,0 +1,82 @@
+#!/bin/bash
+# /usr/local/bin/wifi-monitor-toggle
+# Toggle WiFi interface between managed and monitor mode
+# Usage: wifi-monitor-toggle [iface]
+#
+# DUAL-WIFI ARCHITECTURE:
+#   - wlan0 (built-in brcmfmac) → stays in managed mode for C2/exfil
+#   - wlan1 (RTL8821CU dongle)  → switched to monitor mode for attacks
+#   - If only wlan0 exists, it toggles wlan0 (single-radio mode)
+#   - If wlan1 exists, pressing toggle on wlan0 warns and suggests wlan1
+
+IFACE="${1:-wlan0}"
+
+if [ "$(id -u)" -ne 0 ]; then
+    echo "[!] Root required."
+    exit 1
+fi
+
+if ! ip link show "$IFACE" &>/dev/null; then
+    echo "[!] Interface $IFACE not found."
+    echo "[*] Available interfaces:"
+    iw dev 2>/dev/null | awk '/Interface/{print "  " $2}'
+    exit 1
+fi
+
+DRIVER=$(ethtool -i "$IFACE" 2>/dev/null | awk '/driver:/{print $2}')
+
+IFTYPE=$(iw dev "$IFACE" info 2>/dev/null | awk '/type/{print $2}')
+
+case "$IFTYPE" in
+    managed)
+        echo "[*] Switching $IFACE to monitor mode..."
+
+        if [ "$IFACE" = "wlan0" ] && ip link show wlan1 &>/dev/null 2>&1; then
+            echo "[!] WARNING: wlan1 (RTL8821CU dongle) is available."
+            echo "[!] In dual-WiFi mode, wlan0 should stay in managed mode for C2."
+            echo "[!] Use the dongle for attacks instead:"
+            echo "    wifi-monitor-toggle wlan1"
+            echo "    wifi-deauth wlan1 <bssid> <chan>"
+            echo "    wifi-handshake wlan1 <bssid> <chan>"
+            echo ""
+            read -p "Continue switching wlan0 to monitor mode anyway? [y/N] " CONFIRM
+            if [ "$CONFIRM" != "y" ] && [ "$CONFIRM" != "Y" ]; then
+                echo "[*] Cancelled. Use wlan1 for attacks instead."
+                exit 0
+            fi
+        fi
+
+        rfkill unblock wifi 2>/dev/null
+        ip link set "$IFACE" down
+        iw dev "$IFACE" set type monitor
+        ip link set "$IFACE" up
+
+        if [ "$DRIVER" = "8821cu" ] || [ "$DRIVER" = "rtl8821cu" ]; then
+            echo "[+] $IFACE (RTL8821CU dongle) is now in MONITOR mode"
+            echo "[+] wlan0 (built-in) remains in MANAGED mode for C2"
+        else
+            echo "[+] $IFACE is now in MONITOR mode"
+        fi
+        ;;
+    monitor)
+        echo "[*] Switching $IFACE to managed mode..."
+        ip link set "$IFACE" down
+        iw dev "$IFACE" set type managed
+        ip link set "$IFACE" up
+
+        if [ "$IFACE" != "wlan0" ]; then
+            wpa_supplicant -B -i "$IFACE" -c /etc/wpa_supplicant/wpa_supplicant.conf 2>/dev/null
+        fi
+
+        if [ "$DRIVER" = "8821cu" ] || [ "$DRIVER" = "rtl8821cu" ]; then
+            echo "[+] $IFACE (RTL8821CU dongle) is now in MANAGED mode"
+        else
+            echo "[+] $IFACE is now in MANAGED mode"
+        fi
+        ;;
+    *)
+        echo "[!] Unknown mode: $IFTYPE"
+        echo "[*] Interface info:"
+        iw dev "$IFACE" info 2>/dev/null
+        ;;
+esac

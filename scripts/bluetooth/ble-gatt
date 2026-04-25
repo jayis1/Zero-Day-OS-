@@ -1,0 +1,61 @@
+#!/bin/bash
+# /usr/local/bin/ble-gatt
+# BLE GATT service and characteristic enumeration
+# Usage: ble-gatt <mac>
+
+MAC="$1"
+LOOT="/opt/cardputer/loot/ble"
+TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+
+if [ -z "$MAC" ]; then
+    echo "Usage: ble-gatt <mac>"
+    echo "Example: ble-gatt AA:BB:CC:DD:EE:FF"
+    exit 1
+fi
+
+if ! command -v gatttool &>/dev/null && ! command -v bluetoothctl &>/dev/null; then
+    echo "[!] Neither gatttool nor bluetoothctl found"
+    exit 1
+fi
+
+mkdir -p "$LOOT"
+OUTFILE="$LOOT/ble_gatt_${MAC//:/_}_${TIMESTAMP}.txt"
+
+echo "[*] ZERO-DAY OS — BLE GATT Enumeration"
+echo "[*] Target: $MAC"
+echo "" | tee "$OUTFILE"
+
+echo "=== Connecting to $MAC ===" | tee -a "$OUTFILE"
+
+if command -v bluetoothctl &>/dev/null; then
+    echo "[*] Using bluetoothctl..." | tee -a "$OUTFILE"
+    bluetoothctl << EOF | tee -a "$OUTFILE"
+connect $MAC
+menu gatt
+list-attributes
+back
+disconnect $MAC
+EOF
+fi
+
+if command -v gatttool &>/dev/null; then
+    echo "" | tee -a "$OUTFILE"
+    echo "=== Primary Services ===" | tee -a "$OUTFILE"
+    gatttool -b "$MAC" --primary 2>/dev/null | tee -a "$OUTFILE"
+
+    echo "" | tee -a "$OUTFILE"
+    echo "=== Characteristics ===" | tee -a "$OUTFILE"
+    gatttool -b "$MAC" --characteristics 2>/dev/null | tee -a "$OUTFILE"
+
+    echo "" | tee -a "$OUTFILE"
+    echo "=== Handle Dump ===" | tee -a "$OUTFILE"
+
+    SERVICES=$(gatttool -b "$MAC" --primary 2>/dev/null | grep -oP 'attr handle = 0x[0-9a-f]+')
+    for svc in $SERVICES; do
+        echo "Service: $svc" | tee -a "$OUTFILE"
+        gatttool -b "$MAC" --char-read --handle="$svc" 2>/dev/null | tee -a "$OUTFILE"
+    done
+fi
+
+echo ""
+echo "[+] GATT enumeration complete. Results: $OUTFILE"

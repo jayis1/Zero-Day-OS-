@@ -1,0 +1,54 @@
+#!/bin/bash
+# /usr/local/bin/bt-scan
+# BLE + Classic Bluetooth device discovery
+# Usage: bt-scan [duration]
+
+DURATION="${1:-15}"
+LOOT="/opt/cardputer/loot/bt"
+TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+
+if [ "$(id -u)" -ne 0 ]; then
+    echo "[!] Root required."
+    exit 1
+fi
+
+mkdir -p "$LOOT"
+OUTFILE="$LOOT/bt_scan_${TIMESTAMP}.txt"
+
+echo "[*] ZERO-DAY OS — Bluetooth Scanner"
+echo "[*] Scan duration: ${DURATION}s"
+echo ""
+
+rfkill unblock bluetooth 2>/dev/null
+
+echo "[1/2] Classic Bluetooth scan..."
+hci0=$(hciconfig | grep -oP 'hci\d+' | head -1)
+if [ -z "$hci0" ]; then
+    echo "[!] No Bluetooth adapter found"
+    echo "[*] Try: hciconfig hci0 up"
+    exit 1
+fi
+
+hciconfig "$hci0" up 2>/dev/null
+hciconfig "$hci0" piscan 2>/dev/null
+
+echo "[*] Scanning for classic BT devices..." | tee "$OUTFILE"
+timeout "$DURATION" hcitool scan --flush 2>/dev/null | tee -a "$OUTFILE"
+echo "" | tee -a "$OUTFILE"
+
+echo "[2/2] BLE scan..." | tee -a "$OUTFILE"
+timeout "$DURATION" hcitool lescan --duplicates 2>/dev/null | sort -u | tee -a "$OUTFILE"
+
+echo "" | tee -a "$OUTFILE"
+echo "[*] L2ping sweep for active devices..." | tee -a "$OUTFILE"
+
+FOUND=$(grep -oE '([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}' "$OUTFILE" 2>/dev/null | sort -u)
+for mac in $FOUND; do
+    NAME=$(hcitool name "$mac" 2>/dev/null)
+    printf "  %-18s %s\n" "$mac" "$NAME" | tee -a "$OUTFILE"
+done
+
+echo ""
+echo "[+] Scan complete. Results: $OUTFILE"
+echo "[*] Deep scan: bt-deep <mac>"
+echo "[*] GATT enum: ble-gatt <mac>"

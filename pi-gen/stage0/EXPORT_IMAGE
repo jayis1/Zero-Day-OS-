@@ -1,0 +1,4 @@
+IMG_SUFFIX=""
+EXPORT_IMAGE="zeroday-os"
+NOOBS_NAME="ZERO-DAY OS"
+NOOBS_DESCRIPTION="Pocket Penetration Testing OS for M5Stack Cardputer Zero"

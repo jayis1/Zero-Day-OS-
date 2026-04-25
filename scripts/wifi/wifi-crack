@@ -1,0 +1,48 @@
+#!/bin/bash
+# /usr/local/bin/wifi-crack
+# Crack captured WPA handshakes
+# Usage: wifi-crack <cap_file> [wordlist]
+
+CAP="$1"
+WORDLIST="${2:-/opt/cardputer/config/wordlists/rockyou.txt}"
+
+if [ -z "$CAP" ]; then
+    echo "Usage: wifi-crack <cap_file> [wordlist]"
+    echo ""
+    echo "Available captures:"
+    ls -la /opt/cardputer/handshakes/*.cap 2>/dev/null
+    exit 1
+fi
+
+if [ ! -f "$CAP" ]; then
+    echo "[!] File not found: $CAP"
+    exit 1
+fi
+
+if [ ! -f "$WORDLIST" ]; then
+    echo "[!] Wordlist not found: $WORDLIST"
+    echo "[*] Trying aircrack-ng with common passwords..."
+    WORDLIST="/dev/stdin"
+fi
+
+echo "[*] ZERO-DAY OS — WPA Handshake Cracker"
+echo "[*] Capture: $CAP"
+echo "[*] Wordlist: $WORDLIST"
+echo ""
+
+CONVERTED="${CAP%.cap}-converted.cap"
+aircrack-ng "$CAP" -w "$WORDLIST" -l "${CAP%.cap}.key"
+
+if [ -f "${CAP%.cap}.key" ]; then
+    echo ""
+    echo "[+] KEY FOUND:"
+    cat "${CAP%.cap}.key"
+    echo "[+] Saved to: ${CAP%.cap}.key"
+else
+    echo ""
+    echo "[!] Key not found with this wordlist."
+    echo "[*] Try: wifi-crack $CAP /path/to/other/wordlist.txt"
+    echo "[*] Or use hashcat for GPU acceleration:"
+    echo "    hcxpcapngtool -o ${CAP%.cap}.22000 $CAP"
+    echo "    hashcat -m 22000 ${CAP%.cap}.22000 $WORDLIST"
+fi

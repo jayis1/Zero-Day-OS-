@@ -1,0 +1,91 @@
+#!/bin/bash
+# /usr/local/bin/ir-brute
+# Brute-force IR power codes for TVs, ACs, projectors
+# Usage: ir-brute <protocol> [device]
+# Protocols: nec, rc5, rc6, sony, samsung, lg, panasonic
+# Devices: tv, ac, projector
+
+PROTOCOL="${1:-nec}"
+DEVICE="${2:-tv}"
+LOOT="/opt/cardputer/loot/ir"
+
+if [ "$(id -u)" -ne 0 ]; then
+    echo "[!] Root required."
+    exit 1
+fi
+
+mkdir -p "$LOOT"
+
+IR_CODES_DIR="/opt/cardputer/config/ir_codes"
+mkdir -p "$IR_CODES_DIR"
+
+echo "[*] ZERO-DAY OS — IR Brute Force"
+echo "[*] Protocol: $PROTOCOL | Device: $DEVICE"
+echo ""
+
+generate_nec_power() {
+    local VENDOR_CODES=("0x04" "0x08" "0x0C" "0x10" "0x14" "0x18" "0x20" "0x40" "0x44" "0x48" "0x50" "0x54" "0x58" "0x60" "0x64" "0x68" "0x70" "0x80" "0x84" "0x90")
+    local POWER_CMD="0x02"
+
+    for code in "${VENDOR_CODES[@]}"; do
+        echo "$code $POWER_CMD"
+    done
+}
+
+generate_sony_power() {
+    local CODES=$(seq 0 255)
+    for code in $CODES; do
+        printf "0x%02x 0x15\n" "$code"
+    done
+}
+
+LIRC_DEV="/dev/lirc0"
+
+if [ ! -e "$LIRC_DEV" ]; then
+    echo "[!] No IR transmitter found (/dev/lirc0)"
+    echo "[!] Enable IR overlay: dtoverlay=ir-trx"
+    exit 1
+fi
+
+echo "[*] Transmitting $PROTOCOL power codes for $DEVICE..."
+echo "[*] This will send IR signals in rapid succession."
+echo "[*] Point the Cardputer Zero IR LED at the target device."
+echo "[*] Press Ctrl+C to stop."
+echo ""
+
+case "$PROTOCOL" in
+    nec)
+        COMMANDS=$(generate_nec_power)
+        ;;
+    sony)
+        COMMANDS=$(generate_sony_power)
+        ;;
+    rc5|rc6|samsung|lg|panasonic)
+        echo "[*] Protocol '$PROTOCOL' — using common power codes..."
+        COMMANDS=$(echo -e "0x04 0x02\n0x08 0x02\n0x0C 0x02\n0x10 0x02\n0x40 0x02\n0x80 0x02")
+        ;;
+    *)
+        echo "[!] Unknown protocol: $PROTOCOL"
+        echo "Available: nec, rc5, rc6, sony, samsung, lg, panasonic"
+        exit 1
+        ;;
+esac
+
+TOTAL=$(echo "$COMMANDS" | wc -l)
+COUNT=0
+
+while read -r vendor cmd; do
+    COUNT=$((COUNT + 1))
+    printf "\r[*] Sending code %d/%d: vendor=%s cmd=%s      " "$COUNT" "$TOTAL" "$vendor" "$cmd"
+
+    irsend SEND_ONCE "$PROTOCOL:$DEVICE" "$cmd" 2>/dev/null || {
+        mode2 -d "$LIRC_DEV" <<< "pulse 9000 space 4500 pulse 560 space 560 pulse 560 space 1690" 2>/dev/null
+    }
+
+    sleep 0.3
+done <<< "$COMMANDS"
+
+echo ""
+echo ""
+echo "[+] IR brute force complete ($COUNT codes sent)"
+echo "[*] If the device turned off, note the last code sent."

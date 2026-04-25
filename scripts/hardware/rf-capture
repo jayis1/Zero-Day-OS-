@@ -1,0 +1,114 @@
+#!/bin/bash
+# /usr/local/bin/rf-capture
+# Raw IQ capture from RTL-SDR for offline analysis
+# Saves captured data in a format compatible with GNU Radio, SDR#, inspectrum, etc.
+# Usage: rf-capture [freq] [duration] [sample_rate]
+#   freq        — Center frequency in MHz (default: 433.92)
+#   duration    — Capture duration in seconds (default: 10)
+#   sample_rate — Sample rate in Hz (default: 2400000)
+#
+# Examples:
+#   rf-capture                    # Capture 433.92MHz for 10s
+#   rf-capture 315.0 5           # Capture 315MHz for 5s
+#   rf-capture 868.0 30 1200000  # Capture 868MHz for 30s at 1.2Msps
+#   rf-capture 1090.0 60         # Capture ADS-B (aircraft) for 60s
+
+FREQ="${1:-433.92}"
+DURATION="${2:-10}"
+SAMPLE_RATE="${3:-2400000}"
+TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+OUTDIR="/opt/cardputer/loot/rf"
+mkdir -p "$OUTDIR"
+
+echo "[*] ZERO-DAY OS — RF Capture"
+echo ""
+
+# Check for RTL-SDR hardware
+if ! rtl_test -d 0 >/dev/null 2>&1; then
+    echo "[!] RTL-SDR device not found."
+    echo "[!] Connect an RTL-SDR dongle to the USB-A port."
+    echo ""
+    echo "[*] Supported dongles:"
+    echo "    - RTL-SDR v3/v4"
+    echo "    - Nooelec NESDR Smart"
+    echo "    - Any RTL2832U-based dongle"
+    exit 1
+fi
+
+# Convert MHz to Hz for rtl_sdr
+FREQ_HZ=$(echo "$FREQ * 1000000" | bc -l | cut -d'.' -f1)
+SAMPLES=$(echo "$DURATION * $SAMPLE_RATE" | bc -l | cut -d'.' -f1)
+
+OUTFILE="${OUTDIR}/capture_${TIMESTAMP}_${FREQ}MHz_${SAMPLE_RATE}sps.iq"
+
+echo "[*] Center frequency:   ${FREQ} MHz"
+echo "[*] Sample rate:         ${SAMPLE_RATE} sps"
+echo "[*] Duration:            ${DURATION}s"
+echo "[*] Samples to capture:  ${SAMPLES}"
+echo "[*] Output:              ${OUTFILE}"
+echo ""
+
+# Calculate expected file size
+# Each IQ sample = 2 bytes (8-bit I + 8-bit Q)
+FILESIZE_BYTES=$((SAMPLES * 2))
+FILESIZE_MB=$((FILESIZE_BYTES / 1048576))
+
+echo "[*] Expected file size:  ~${FILESIZE_MB}MB"
+echo "[*] Free disk space:"
+df -h "$OUTDIR" | tail -1 | awk '{print "    " $4 " available on " $6}'
+echo ""
+
+# Check available disk space (need at least 2x expected size for safety)
+AVAIL_KB=$(df "$OUTDIR" | tail -1 | awk '{print $4}')
+NEED_KB=$((FILESIZE_BYTES / 1024 * 2))
+if [ "$AVAIL_KB" -lt "$NEED_KB" ]; then
+    echo "[!] Insufficient disk space (need ~$((NEED_KB / 1024))MB, have ~$((AVAIL_KB / 1024))MB)"
+    echo "[!] Try a shorter duration or lower sample rate"
+    exit 1
+fi
+
+echo "[*] Capturing..."
+echo "[*] rtl_sdr -f ${FREQ_HZ} -s ${SAMPLE_RATE} -n ${SAMPLES} ${OUTFILE}"
+
+# Run the capture
+rtl_sdr -f "$FREQ_HZ" -s "$SAMPLE_RATE" -n "$SAMPLES" "$OUTFILE" 2>/dev/null
+
+RESULT=$?
+
+if [ $RESULT -ne 0 ]; then
+    echo "[!] Capture failed."
+    echo "[!] Try: rtl_test (to verify hardware)"
+    # Remove incomplete file
+    rm -f "$OUTFILE" 2>/dev/null
+    exit 1
+fi
+
+# Verify capture
+ACTUAL_SIZE=$(stat -c%s "$OUTFILE" 2>/dev/null || echo "0")
+ACTUAL_MB=$((ACTUAL_SIZE / 1048576))
+
+echo "[+] Capture complete: ${OUTFILE}"
+echo "[+] File size: ${ACTUAL_MB}MB"
+echo ""
+
+# Generate a quick summary metadata file
+METAFILE="${OUTDIR}/capture_${TIMESTAMP}_${FREQ}MHz_${SAMPLE_RATE}sps.meta"
+cat > "$METAFILE" << METADATA
+capture_date: $(date '+%Y-%m-%d %H:%M:%S')
+center_freq_hz: ${FREQ_HZ}
+center_freq_mhz: ${FREQ}
+sample_rate: ${SAMPLE_RATE}
+duration_seconds: ${DURATION}
+samples: ${SAMPLES}
+format: uint8 IQ (interleaved)
+file_size_bytes: ${ACTUAL_SIZE}
+device: RTL-SDR
+METADATA
+
+echo "[+] Metadata saved: ${METAFILE}"
+echo ""
+echo "[*] Analysis tools:"
+echo "    inspectrum ${OUTFILE}         — Visual waveform analysis"
+echo "    sox -r ${SAMPLE_RATE} -e unsigned-integer -b 8 -c 2 ${OUTFILE} output.wav — Convert to WAV"
+echo "    rtl_433 -r ${OUTFILE}         — Decode 433MHz protocols"
+echo "    python3 -c 'import numpy; d=numpy.fromfile(\"${OUTFILE}\",dtype=numpy.uint8); print(d.shape)' — Quick check"

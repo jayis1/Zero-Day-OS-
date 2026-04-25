@@ -1,0 +1,48 @@
+#!/bin/bash
+# /usr/local/bin/ir-replay
+# Replay captured IR signals
+# Usage: ir-replay <signal_file>
+
+SIGNAL_FILE="$1"
+
+if [ -z "$SIGNAL_FILE" ]; then
+    echo "Usage: ir-replay <signal_file>"
+    echo ""
+    echo "Captured signals:"
+    ls -la /opt/cardputer/loot/ir/*.raw 2>/dev/null
+    exit 1
+fi
+
+if [ ! -f "$SIGNAL_FILE" ]; then
+    echo "[!] File not found: $SIGNAL_FILE"
+    exit 1
+fi
+
+if [ "$(id -u)" -ne 0 ]; then
+    echo "[!] Root required."
+    exit 1
+fi
+
+echo "[*] ZERO-DAY OS — IR Signal Replay"
+echo "[*] File: $SIGNAL_FILE"
+echo ""
+
+LIRC_DEV="/dev/lirc0"
+
+if [ -e "$LIRC_DEV" ]; then
+    echo "[*] Replaying via lirc..."
+    mode2 -d "$LIRC_DEV" < "$SIGNAL_FILE" 2>/dev/null && echo "[+] Signal replayed" || echo "[!] Replay failed"
+else
+    echo "[*] lirc0 not found, trying raw GPIO TX..."
+
+    IR_TX_GPIO=$(grep -r "ir_tx" /sys/class/gpio/ 2>/dev/null | head -1 | cut -d/ -f5 || echo "")
+
+    if [ -n "$IR_TX_GPIO" ]; then
+        echo "[*] Found GPIO IR transmitter: $IR_TX_GPIO"
+        echo "[*] Raw GPIO replay not yet implemented"
+        echo "[!] Enable lirc overlay: dtoverlay=ir-trx"
+    else
+        echo "[!] No IR transmitter found"
+        echo "[!] Enable IR transceiver overlay: dtoverlay=ir-trx"
+    fi
+fi

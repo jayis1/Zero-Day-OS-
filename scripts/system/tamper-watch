@@ -1,0 +1,99 @@
+#!/bin/bash
+# /usr/local/bin/tamper-watch
+# BMI270 IMU tamper detection daemon
+# Installed as: systemd service (tamper-watch.service)
+
+IIO_DEV="/sys/bus/iio/devices/iio:device0"
+CONFIG="/opt/cardputer/config/tamper.conf"
+LOOT="/opt/cardputer/loot"
+PANIC_LOG="/opt/cardputer/panic.log"
+
+ACCEL_THRESHOLD=2.0
+MOVE_THRESHOLD=0.1
+LOCK_ON_MOVE=true
+WIPE_ON_VIOLENT=true
+POLL_INTERVAL=0.5
+STEALTH_MODE=false
+
+[ -f "$CONFIG" ] && source "$CONFIG"
+
+echo "[*] ZERO-DAY OS — Tamper Watch Daemon"
+echo "[*] Accel threshold: ${ACCEL_THRESHOLD}g (violent)"
+echo "[*] Move threshold:  ${MOVE_THRESHOLD}g (any)"
+echo "[*] Lock on move:    ${LOCK_ON_MOVE}"
+echo "[*] Wipe on violent: ${WIPE_ON_VIOLENT}"
+echo ""
+
+if [ ! -d "$IIO_DEV" ]; then
+    echo "[!] BMI270 IIO device not found at $IIO_DEV"
+    echo "[!] Ensure dtoverlay=bmi270 is loaded"
+    exit 1
+fi
+
+ACC_X="$IIO_DEV/in_accel_x_raw"
+ACC_Y="$IIO_DEV/in_accel_y_raw"
+ACC_Z="$IIO_DEV/in_accel_z_raw"
+ACC_SCALE="$IIO_DEV/in_accel_scale"
+
+if [ ! -f "$ACC_X" ]; then
+    echo "[!] Accelerometer channels not found"
+    exit 1
+fi
+
+SCALE=$(cat "$ACC_SCALE" 2>/dev/null || echo "0.009576")
+
+prev_x=0
+prev_y=0
+prev_z=0
+still_count=0
+
+while true; do
+    raw_x=$(cat "$ACC_X" 2>/dev/null || echo "0")
+    raw_y=$(cat "$ACC_Y" 2>/dev/null || echo "0")
+    raw_z=$(cat "$ACC_Z" 2>/dev/null || echo "0")
+
+    x=$(echo "$raw_x * $SCALE" | bc -l 2>/dev/null || echo "0")
+    y=$(echo "$raw_y * $SCALE" | bc -l 2>/dev/null || echo "0")
+    z=$(echo "$raw_z * $SCALE" | bc -l 2>/dev/null || echo "0")
+
+    mag=$(echo "sqrt($x^2 + $y^2 + $z^2)" | bc -l 2>/dev/null || echo "9.81")
+    delta=$(echo "$mag - 9.81" | bc -l 2>/dev/null || echo "0")
+
+    if [ "$(echo "$delta < 0" | bc -l 2>/dev/null)" = "1" ]; then
+        delta=$(echo "-1 * $delta" | bc -l)
+    fi
+
+    if [ "$(echo "$delta > $ACCEL_THRESHOLD" | bc -l 2>/dev/null)" = "1" ]; then
+        echo "$(date '+%Y-%m-%d %H:%M:%S') TAMPER: VIOLENT movement detected (delta=${delta})" >> "$PANIC_LOG"
+
+        if [ "$WIPE_ON_VIOLENT" = true ]; then
+            echo "[!] VIOLENT TAMPER — Wiping loot and history..."
+            rm -rf "${LOOT:?}/"* 2>/dev/null
+            history -c 2>/dev/null
+            rm -f ~/.bash_history 2>/dev/null
+        fi
+
+        if command -v vlock &>/dev/null; then
+            vlock 2>/dev/null &
+        fi
+
+        still_count=0
+        sleep 2
+
+    elif [ "$(echo "$delta > $MOVE_THRESHOLD" | bc -l 2>/dev/null)" = "1" ]; then
+        echo "$(date '+%Y-%m-%d %H:%M:%S') TAMPER: Movement detected (delta=${delta})" >> "$PANIC_LOG"
+
+        if [ "$LOCK_ON_MOVE" = true ] && [ "$STEALTH_MODE" = true ]; then
+            if command -v vlock &>/dev/null; then
+                vlock 2>/dev/null &
+            fi
+        fi
+
+        still_count=0
+
+    else
+        still_count=$((still_count + 1))
+    fi
+
+    sleep "$POLL_INTERVAL"
+done

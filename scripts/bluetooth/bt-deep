@@ -1,0 +1,57 @@
+#!/bin/bash
+# /usr/local/bin/bt-deep
+# Deep Bluetooth device enumeration
+# Usage: bt-deep <mac>
+
+MAC="$1"
+LOOT="/opt/cardputer/loot/bt"
+TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+
+if [ -z "$MAC" ]; then
+    echo "Usage: bt-deep <mac>"
+    echo "Example: bt-deep AA:BB:CC:DD:EE:FF"
+    exit 1
+fi
+
+mkdir -p "$LOOT"
+OUTFILE="$LOOT/bt_deep_${MAC//:/_}_${TIMESTAMP}.txt"
+
+echo "[*] ZERO-DAY OS — Bluetooth Deep Enumeration"
+echo "[*] Target: $MAC"
+echo "" | tee "$OUTFILE"
+
+echo "=== Device Name ===" | tee -a "$OUTFILE"
+hcitool name "$MAC" 2>/dev/null | tee -a "$OUTFILE"
+echo "" | tee -a "$OUTFILE"
+
+echo "=== Device Class ===" | tee -a "$OUTFILE"
+hcitool info "$MAC" 2>/dev/null | tee -a "$OUTFILE"
+echo "" | tee -a "$OUTFILE"
+
+echo "=== LMP Version ===" | tee -a "$OUTFILE"
+hcitool leinfo "$MAC" 2>/dev/null | tee -a "$OUTFILE" || echo "(Not a LE device)" | tee -a "$OUTFILE"
+echo "" | tee -a "$OUTFILE"
+
+echo "=== SDP Services ===" | tee -a "$OUTFILE"
+sdptool browse "$MAC" 2>/dev/null | tee -a "$OUTFILE"
+echo "" | tee -a "$OUTFILE"
+
+echo "=== RFCOMM Channels ===" | tee -a "$OUTFILE"
+sdptool search --bdaddr "$MAC" RFCOMM 2>/dev/null | tee -a "$OUTFILE"
+echo "" | tee -a "$OUTFILE"
+
+echo "=== Link Quality ===" | tee -a "$OUTFILE"
+hcitool lq "$MAC" 2>/dev/null | tee -a "$OUTFILE"
+echo "" | tee -a "$OUTFILE"
+
+echo "=== RSSI ===" | tee -a "$OUTFILE"
+hcitool rssi "$MAC" 2>/dev/null | tee -a "$OUTFILE"
+echo "" | tee -a "$OUTFILE"
+
+echo "=== TX Power ===" | tee -a "$OUTFILE"
+hcitool tpl "$MAC" 2>/dev/null | tee -a "$OUTFILE"
+echo "" | tee -a "$OUTFILE"
+
+echo "[+] Deep scan complete. Results: $OUTFILE"
+echo "[*] Attack: bt-attack <type> $MAC"
+echo "[*] GATT:  ble-gatt $MAC"

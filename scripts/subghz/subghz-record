@@ -1,0 +1,66 @@
+#!/bin/bash
+# /usr/local/bin/subghz-record
+# Record Sub-GHz radio signals from remotes, key fobs, garage doors
+# Usage: subghz-record <frequency_mhz> [duration_seconds] [output]
+#
+# Requires: CC1101 on SPI, or YardStick One on USB, or RTL-SDR on USB-A
+
+FREQ="${1:-433.920}"
+DURATION="${2:-10}"
+OUTPUT="${3:-}"
+LOOT="/opt/cardputer/loot/rf"
+TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+
+mkdir -p "$LOOT"
+[ -z "$OUTPUT" ] && OUTPUT="$LOOT/subghz_rec_${FREQ}MHz_${TIMESTAMP}.raw"
+
+echo "[*] ZERO-DAY OS — Sub-GHz Signal Recorder"
+echo "[*] Frequency: ${FREQ}MHz"
+echo "[*] Duration: ${DURATION}s"
+echo "[*] Output: $OUTPUT"
+echo ""
+
+if command -v rfcat &>/dev/null; then
+    echo "[*] Using YardStick One (rfcat)..."
+    rfcat -r "$OUTPUT" -f "${FREQ}e6" -d "$DURATION" 2>/dev/null
+    echo "[+] Signal recorded to $OUTPUT"
+    echo "[*] Replay with: subghz-replay $OUTPUT"
+
+elif python3 -c "import cc1101" 2>/dev/null; then
+    echo "[*] Using CC1101 on SPI..."
+    python3 << PYEOF
+import cc1101, time
+
+radio = cc1101.CC1101()
+radio.reset()
+radio.set_frequency(${FREQ} * 1e6)
+radio.set_modem_format(cc1101.ModemFormat.ASK_OOK)
+
+print(f"[*] Recording on {${FREQ}}MHz for ${DURATION}s...")
+time.sleep(${DURATION})
+
+with open("${OUTPUT}", "wb") as f:
+    data = radio.receive_bytes()
+    if data:
+        f.write(data)
+        print(f"[+] Captured {len(data)} bytes")
+    else:
+        print("[!] No signal received")
+
+print(f"[+] Saved to ${OUTPUT}")
+print("[*] Replay with: subghz-replay ${OUTPUT}")
+PYEOF
+
+elif command -v rtl_433 &>/dev/null; then
+    echo "[*] Using RTL-SDR to capture at ${FREQ}MHz..."
+    rtl_433 -f "${FREQ}e6" -s 1024000 -T "$DURATION" -F json -T "$DURATION" \
+        -F json "$LOOT/subghz_rtl_${TIMESTAMP}.json" 2>/dev/null
+    echo "[+] Captured to $LOOT/subghz_rtl_${TIMESTAMP}.json"
+
+else
+    echo "[!] No Sub-GHz hardware found."
+    echo "[!] Install one of:"
+    echo "    YardStick One: pip3 install rfcat"
+    echo "    CC1101 SPI:   pip3 install cc1101"
+    echo "    RTL-SDR USB:  apt install rtl-433"
+fi

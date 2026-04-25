@@ -1,0 +1,39 @@
+#!/bin/bash
+# /usr/local/bin/net-vulnscan
+# Chained vulnerability scan: nmap vuln + nikto + whatweb
+# Usage: net-vulnscan <target>
+
+TARGET="$1"
+LOOT="/opt/cardputer/loot/recon"
+TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+
+if [ -z "$TARGET" ]; then
+    echo "Usage: net-vulnscan <target>"
+    exit 1
+fi
+
+mkdir -p "$LOOT"
+OUTDIR="$LOOT/vulnscan_${TIMESTAMP}"
+mkdir -p "$OUTDIR"
+
+echo "[*] ZERO-DAY OS — Vulnerability Scanner Chain"
+echo "[*] Target: $TARGET"
+echo ""
+
+echo "[1/3] Nmap vulnerability scripts..."
+nmap -sV --script=vuln -T4 "$TARGET" -oA "$OUTDIR/nmap_vuln"
+echo ""
+
+echo "[2/3] Nikto web server scanner..."
+timeout 300 nikto -h "$TARGET" -output "$OUTDIR/nikto.txt" 2>/dev/null || echo "[!] Nikto timed out or failed"
+echo ""
+
+echo "[3/3] WhatWeb fingerprinting..."
+whatweb -v "$TARGET" > "$OUTDIR/whatweb.txt" 2>/dev/null || echo "[!] WhatWeb failed"
+echo ""
+
+echo "[+] Vulnerability scan chain complete."
+echo "[+] Results in: $OUTDIR/"
+echo ""
+echo "[*] Files:"
+ls -la "$OUTDIR/" 2>/dev/null
