@@ -7,7 +7,7 @@
 
 **The first penetration testing OS built for a credit-card-sized computer you can hold in one hand.**
 
-ZERO-DAY OS turns the M5Stack Cardputer Zero — a quad-core ARM box with WiFi, BT, Ethernet, IR, a camera, a battery, and a built-in keyboard for $50 — into a pocketable offensive security weapon. Every byte of this distro is optimized for the constraints of 512MB RAM and a 1.9" screen. No desktop. No bloat. No compromises.
+ZERO-DAY OS turns the M5Stack Cardputer Zero — a quad-core ARM box with WiFi, BT, Ethernet, IR, a camera, a battery, and a built-in keyboard — into a pocketable offensive security weapon. Every byte of this distro is optimized for the constraints of 512MB RAM and a 1.9" screen. No desktop. No bloat. No compromises.
 
 ---
 
