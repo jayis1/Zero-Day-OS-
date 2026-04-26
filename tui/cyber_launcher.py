@@ -321,6 +321,19 @@ class CyberLauncher:
             except:
                 self.icons[cat["key"]] = None
                 
+        # Premium UX setup
+        self.anim_offset = 0.0
+        try:
+            self.bg_img = pygame.image.load(os.path.join(base_dir, "assets", "bg.png")).convert()
+        except:
+            self.bg_img = None
+            
+        try:
+            pygame.mixer.init(frequency=44100, size=-16, channels=1, buffer=512)
+            self.tick_snd = pygame.mixer.Sound(os.path.join(base_dir, "assets", "audio", "tick.wav"))
+        except:
+            self.tick_snd = None
+                
         self.running = True
         
         # Cursors / Navigation
@@ -350,6 +363,42 @@ class CyberLauncher:
         self.wt_receiving = False
         self.wt_transmit_event = threading.Event()
         self.wt_tx_start_time = 0
+
+        # File Browser state
+        self.fb_path = "/"
+        self.fb_items = []
+        self.fb_idx = 0
+        self.fb_scroll = 0
+
+    def load_directory(self, path):
+        try:
+            items = os.listdir(path)
+        except PermissionError:
+            return False
+            
+        self.fb_items = []
+        if path != "/":
+            self.fb_items.append({"name": "..", "is_dir": True})
+            
+        dirs, files = [], []
+        for item in items:
+            full = os.path.join(path, item)
+            if os.path.isdir(full): dirs.append({"name": item, "is_dir": True})
+            else: files.append({"name": item, "is_dir": False})
+            
+        dirs.sort(key=lambda x: x["name"].lower())
+        files.sort(key=lambda x: x["name"].lower())
+        self.fb_items.extend(dirs)
+        self.fb_items.extend(files)
+        
+        self.fb_path = path
+        self.fb_idx = 0
+        self.fb_scroll = 0
+        return True
+
+    def play_tick(self):
+        if self.tick_snd:
+            self.tick_snd.play()
 
     def get_text_surface(self, text, font, color):
         key = f"{text}_{font}_{color}"
@@ -382,7 +431,17 @@ class CyberLauncher:
             self.state = "HOME"
 
     def render_home(self):
-        self.screen.fill(BG_COLOR)
+        if self.bg_img:
+            self.screen.blit(self.bg_img, (0, 0))
+        else:
+            self.screen.fill(BG_COLOR)
+            
+        # Lerp animation
+        self.anim_offset += (0.0 - self.anim_offset) * 0.3
+        if abs(self.anim_offset) < 0.01:
+            self.anim_offset = 0.0
+            
+        slide_x = int(self.anim_offset * (SCREEN_W // 2))
         
         cat = CATEGORIES[self.home_idx]
         color = cat["color"]
@@ -398,7 +457,7 @@ class CyberLauncher:
         if prev_img:
             small_prev = pygame.transform.scale(prev_img, (48, 48))
             small_prev.set_alpha(80)
-            self.screen.blit(small_prev, (10, cy - 24), special_flags=pygame.BLEND_RGBA_ADD)
+            self.screen.blit(small_prev, (10 + slide_x, cy - 24), special_flags=pygame.BLEND_RGBA_ADD)
             
         next_idx = (self.home_idx + 1) % len(CATEGORIES)
         next_cat = CATEGORIES[next_idx]
@@ -406,20 +465,57 @@ class CyberLauncher:
         if next_img:
             small_next = pygame.transform.scale(next_img, (48, 48))
             small_next.set_alpha(80)
-            self.screen.blit(small_next, (SCREEN_W - 58, cy - 24), special_flags=pygame.BLEND_RGBA_ADD)
+            self.screen.blit(small_next, (SCREEN_W - 58 + slide_x, cy - 24), special_flags=pygame.BLEND_RGBA_ADD)
             
         center_img = self.icons.get(cat["key"])
         if center_img:
             pulse = abs(math.sin(pygame.time.get_ticks() / 400.0))
             center_glow = center_img.copy()
             center_glow.set_alpha(int(150 + 105 * pulse))
-            self.screen.blit(center_glow, (cx - 48, cy - 48), special_flags=pygame.BLEND_RGBA_ADD)
+            self.screen.blit(center_glow, (cx - 48 + slide_x, cy - 48), special_flags=pygame.BLEND_RGBA_ADD)
             
         tsurf = self.get_text_surface(f"<{cat['name']}>", self.font_title, color)
-        self.screen.blit(tsurf, (cx - tsurf.get_width()//2, cy + 55))
+        self.screen.blit(tsurf, (cx - tsurf.get_width()//2 + slide_x, cy + 55))
         
         hint = self.get_text_surface("L/R: Navigate  Enter: Select", self.font_label, TEXT_SECONDARY)
         self.screen.blit(hint, (cx - hint.get_width()//2, SCREEN_H - 15))
+
+    def render_file_browser(self):
+        if self.bg_img: self.screen.blit(self.bg_img, (0, 0))
+        else: self.screen.fill(BG_COLOR)
+        
+        self.draw_top_banner("FILE BROWSER", color=CATEGORIES[11]["color"], right_text="← Back(Esc)")
+        
+        path_surf = self.get_text_surface(f"Path: {self.fb_path}", self.font_cmd, TEXT_SECONDARY)
+        self.screen.blit(path_surf, (10, 16))
+        pygame.draw.line(self.screen, DIM_BG, (10, 26), (SCREEN_W-10, 26))
+        
+        if not self.fb_items:
+            emp = self.get_text_surface("[Empty or Permission Denied]", self.font_label, TEXT_SECONDARY)
+            self.screen.blit(emp, (20, 40))
+            return
+            
+        y = 30
+        for i in range(self.fb_scroll, min(len(self.fb_items), self.fb_scroll + 9)):
+            item = self.fb_items[i]
+            is_selected = (i == self.fb_idx)
+            
+            if is_selected:
+                pygame.draw.rect(self.screen, DIM_BG, (8, y-2, SCREEN_W-16, 14))
+                
+            icon = "[D]" if item["is_dir"] else "[F]"
+            color = CATEGORIES[11]["color"] if item["is_dir"] else TEXT_PRIMARY
+            if is_selected: color = (255, 255, 255)
+            
+            t = self.get_text_surface(f"{icon} {item['name']}", self.font_label, color)
+            self.screen.blit(t, (12, y))
+            y += 15
+            
+        if len(self.fb_items) > 9:
+            sb_h = max(10, int((9 / len(self.fb_items)) * 135))
+            sb_y = 30 + int((self.fb_scroll / max(1, len(self.fb_items) - 9)) * (135 - sb_h))
+            pygame.draw.rect(self.screen, DIM_BG, (SCREEN_W - 6, 30, 4, 135))
+            pygame.draw.rect(self.screen, TEXT_SECONDARY, (SCREEN_W - 6, sb_y, 4, sb_h))
 
     def render_list(self):
         self.screen.fill(BG_COLOR)
@@ -854,18 +950,50 @@ class CyberLauncher:
                 self.running = False
                 
             elif event.type == pygame.KEYDOWN:
+                self.play_tick()
                 if self.state == "SPLASH":
                     self.state = "HOME"
                 elif self.state == "HOME":
-                    if event.key == pygame.K_RIGHT: self.home_idx = (self.home_idx + 1) % len(CATEGORIES)
-                    elif event.key == pygame.K_LEFT: self.home_idx = (self.home_idx - 1) % len(CATEGORIES)
+                    if event.key == pygame.K_RIGHT:
+                        self.home_idx = (self.home_idx + 1) % len(CATEGORIES)
+                        self.anim_offset = 1.0
+                    elif event.key == pygame.K_LEFT:
+                        self.home_idx = (self.home_idx - 1) % len(CATEGORIES)
+                        self.anim_offset = -1.0
                     elif event.key == pygame.K_RETURN:
-                        self.state = "LIST"
-                        self.list_idx = 0
-                        self.list_scroll = 0
+                        cat = CATEGORIES[self.home_idx]
+                        if cat["key"] == "OPEN":
+                            self.state = "FILE_BROWSER"
+                            self.load_directory("/")
+                        else:
+                            self.state = "LIST"
+                            self.list_idx = 0
+                            self.list_scroll = 0
                     elif event.key in (pygame.K_ESCAPE, pygame.K_q):
                         self.running = False
                         
+                elif self.state == "FILE_BROWSER":
+                    if event.key == pygame.K_UP:
+                        self.fb_idx = max(0, self.fb_idx - 1)
+                        if self.fb_idx < self.fb_scroll: self.fb_scroll = self.fb_idx
+                    elif event.key == pygame.K_DOWN:
+                        self.fb_idx = min(len(self.fb_items) - 1, self.fb_idx + 1)
+                        if self.fb_idx >= self.fb_scroll + 9: self.fb_scroll = self.fb_idx - 8
+                    elif event.key == pygame.K_RIGHT or event.key == pygame.K_RETURN:
+                        if self.fb_items:
+                            item = self.fb_items[self.fb_idx]
+                            if item["is_dir"]:
+                                new_path = os.path.abspath(os.path.join(self.fb_path, item["name"]))
+                                self.load_directory(new_path)
+                            else:
+                                self.current_tool = {"name": f"View {item['name']}", "cmd": f"cat '{os.path.join(self.fb_path, item['name'])}' | less"}
+                                self.state = "ACTION"
+                    elif event.key == pygame.K_LEFT or event.key == pygame.K_ESCAPE:
+                        if self.fb_path == "/":
+                            self.state = "HOME"
+                        else:
+                            self.load_directory(os.path.dirname(self.fb_path))
+                            
                 elif self.state == "LIST":
                     cat_key = CATEGORIES[self.home_idx]["key"]
                     tools = TOOLS.get(cat_key, [])
@@ -987,7 +1115,10 @@ class CyberLauncher:
             elif self.state == "LIST": self.render_list()
             elif self.state == "ACTION": self.render_action()
             elif self.state == "PROMPT": self.render_prompt()
-            elif self.state == "MEDIA_PLAYER": self.render_media_player()
+            elif self.state == "MEDIA_PLAYER":
+                self.render_media_player()
+            elif self.state == "FILE_BROWSER":
+                self.render_file_browser()
             elif self.state == "WALKIE_TALKIE": self.render_walkie_talkie()
             
             pygame.display.flip()
