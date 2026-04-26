@@ -282,12 +282,15 @@ class CyberLauncher:
         pygame.display.set_caption("ZERO-DAY OS")
         pygame.key.set_repeat(300, 50)
         
-        # Load fonts (fallback to monospace if Terminus missing)
+        # Load fonts (fallback to monospace if TTF missing)
         try:
-            self.font_title = pygame.font.SysFont("terminus", 12, bold=True)
-            self.font_label = pygame.font.SysFont("terminus", 10)
-            self.font_desc  = pygame.font.SysFont("terminus", 8)
-            self.font_cmd   = pygame.font.SysFont("terminus", 9)
+            base_dir = os.path.dirname(os.path.abspath(__file__))
+            font_path = os.path.join(base_dir, "assets", "fonts", "RobotoMono-Regular.ttf")
+            self.font_title = pygame.font.Font(font_path, 12)
+            self.font_title.set_bold(True)
+            self.font_label = pygame.font.Font(font_path, 10)
+            self.font_desc  = pygame.font.Font(font_path, 8)
+            self.font_cmd   = pygame.font.Font(font_path, 9)
         except Exception:
             self.font_title = pygame.font.SysFont("monospace", 12, bold=True)
             self.font_label = pygame.font.SysFont("monospace", 10)
@@ -299,12 +302,25 @@ class CyberLauncher:
         # States: SPLASH, HOME, LIST, ACTION, PROMPT, WALKIE_TALKIE, MEDIA_PLAYER
         self.state = "SPLASH"
         self.splash_start = pygame.time.get_ticks()
+        
+        base_dir = os.path.dirname(os.path.abspath(__file__))
         try:
-            base_dir = os.path.dirname(os.path.abspath(__file__))
             self.logo_img = pygame.image.load(os.path.join(base_dir, "assets", "logo_splash.png")).convert_alpha()
         except:
             self.logo_img = None
             
+        # Load Custom PNG Icons
+        self.icons = {}
+        icon_dir = os.path.join(base_dir, "assets", "icons")
+        for cat in CATEGORIES:
+            try:
+                ipath = os.path.join(icon_dir, f"{cat['key']}.png")
+                img = pygame.image.load(ipath).convert()
+                img.set_colorkey((0, 0, 0))
+                self.icons[cat["key"]] = img
+            except:
+                self.icons[cat["key"]] = None
+                
         self.running = True
         
         # Cursors / Navigation
@@ -367,38 +383,43 @@ class CyberLauncher:
 
     def render_home(self):
         self.screen.fill(BG_COLOR)
+        
+        cat = CATEGORIES[self.home_idx]
+        color = cat["color"]
+        
         self.draw_top_banner("ZERO-DAY OS", right_text="v1.0")
         
-        # Grid: 4 cols x 3 rows = 12 cells (fits all 12 categories)
-        cols, rows = 4, 3
-        cell_w, cell_h = 76, 50
-        margin_x, margin_y = 8, 18
-        gap = 1
+        cx = SCREEN_W // 2
+        cy = SCREEN_H // 2
         
-        for i, cat in enumerate(CATEGORIES):
-            if i >= cols * rows: break
-            col = i % cols
-            row = i // cols
+        prev_idx = (self.home_idx - 1) % len(CATEGORIES)
+        prev_cat = CATEGORIES[prev_idx]
+        prev_img = self.icons.get(prev_cat["key"])
+        if prev_img:
+            small_prev = pygame.transform.scale(prev_img, (48, 48))
+            small_prev.set_alpha(80)
+            self.screen.blit(small_prev, (10, cy - 24), special_flags=pygame.BLEND_RGBA_ADD)
             
-            x = margin_x + col * (cell_w + gap)
-            y = margin_y + row * (cell_h + gap)
+        next_idx = (self.home_idx + 1) % len(CATEGORIES)
+        next_cat = CATEGORIES[next_idx]
+        next_img = self.icons.get(next_cat["key"])
+        if next_img:
+            small_next = pygame.transform.scale(next_img, (48, 48))
+            small_next.set_alpha(80)
+            self.screen.blit(small_next, (SCREEN_W - 58, cy - 24), special_flags=pygame.BLEND_RGBA_ADD)
             
-            is_focused = (i == self.home_idx)
-            color = cat["color"] if is_focused else TEXT_SECONDARY
+        center_img = self.icons.get(cat["key"])
+        if center_img:
+            pulse = abs(math.sin(pygame.time.get_ticks() / 400.0))
+            center_glow = center_img.copy()
+            center_glow.set_alpha(int(150 + 105 * pulse))
+            self.screen.blit(center_glow, (cx - 48, cy - 48), special_flags=pygame.BLEND_RGBA_ADD)
             
-            # Cell BG
-            bg = (color[0]//5, color[1]//5, color[2]//5) if is_focused else BG_COLOR
-            pygame.draw.rect(self.screen, bg, (x, y, cell_w, cell_h))
-            
-            # Border
-            pygame.draw.rect(self.screen, color if is_focused else DIM_BG, (x, y, cell_w, cell_h), 2 if is_focused else 1)
-            
-            # Icon
-            draw_icon(self.screen, cat["key"], x + (cell_w - 24)//2, y + 6, 24, color)
-            
-            # Label
-            tsurf = self.get_text_surface(cat["name"], self.font_label, color)
-            self.screen.blit(tsurf, (x + (cell_w - tsurf.get_width())//2, y + 34))
+        tsurf = self.get_text_surface(f"<{cat['name']}>", self.font_title, color)
+        self.screen.blit(tsurf, (cx - tsurf.get_width()//2, cy + 55))
+        
+        hint = self.get_text_surface("L/R: Navigate  Enter: Select", self.font_label, TEXT_SECONDARY)
+        self.screen.blit(hint, (cx - hint.get_width()//2, SCREEN_H - 15))
 
     def render_list(self):
         self.screen.fill(BG_COLOR)
@@ -838,8 +859,6 @@ class CyberLauncher:
                 elif self.state == "HOME":
                     if event.key == pygame.K_RIGHT: self.home_idx = (self.home_idx + 1) % len(CATEGORIES)
                     elif event.key == pygame.K_LEFT: self.home_idx = (self.home_idx - 1) % len(CATEGORIES)
-                    elif event.key == pygame.K_DOWN: self.home_idx = (self.home_idx + 4) % len(CATEGORIES)
-                    elif event.key == pygame.K_UP: self.home_idx = (self.home_idx - 4) % len(CATEGORIES)
                     elif event.key == pygame.K_RETURN:
                         self.state = "LIST"
                         self.list_idx = 0
