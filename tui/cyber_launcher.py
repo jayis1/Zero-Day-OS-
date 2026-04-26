@@ -143,6 +143,9 @@ TOOLS = {
     ],
     "RADIO": [
         {"name": "Wi-Fi Walkie Talkie", "desc": "Local Push-To-Talk Radio",      "cmd": "WALKIE_TALKIE",                     "need_root": False},
+        {"name": "Mesh Chat",         "desc": "Interactive LoRa mesh chat",      "cmd": "mesh-chat chat",                    "need_root": False},
+        {"name": "Mesh Listen",       "desc": "Listen to mesh messages",         "cmd": "mesh-chat listen",                  "need_root": False},
+        {"name": "Mesh Nodes",        "desc": "List discovered mesh nodes",      "cmd": "mesh-chat nodes",                   "need_root": False},
         {"name": "SDR Scan",          "desc": "Frequency sweep via RTL-SDR",     "cmd": "sudo sdr-scan",                     "need_root": True,  "args": ["FREQ_RANGE"]},
         {"name": "RF Capture",        "desc": "Raw IQ signal capture",           "cmd": "sudo rf-capture",                   "need_root": True,  "args": ["FREQ"]},
         {"name": "GPIO Probe",        "desc": "Enumerate I2C/SPI/UART devices",  "cmd": "sudo gpio-probe",                   "need_root": True},
