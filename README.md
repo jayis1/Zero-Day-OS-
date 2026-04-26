@@ -365,6 +365,14 @@ Every sensor and radio on the Cardputer Zero is mapped and ready:
 | **USB-C Device** | USB 2.0 | Plug into victim PC → reverse shell / HID attack |
 | **Expansion Port** | HY2.0-4P + 2.54-14P | GPIO, SPI, I2C, UART — connect anything |
 
+### Expansion Modules & Dual-Wielding
+The Cardputer Zero features two distinct expansion interfaces that can be used simultaneously:
+1. **The Grove Port (HY2.0-4P):** I2C / UART. Perfect for attaching the **MonsterC5** board for advanced Wi-Fi attacks.
+2. **The GPIO Header (ExtPort 2.54-14P):** Perfect for stacking M5Stack CAP modules. 
+
+You can "dual-wield" by plugging the MonsterC5 into the Grove port, while simultaneously connecting **one** CAP module to the GPIO header. 
+*Note: Because CAPs use the same physical GPIO header, you cannot stack the LoRa Meshtastic CAP and the CC1101/NFC subGHz CAP at the same time. You must choose one CAP to run alongside the MonsterC5.*
+
 ### USB-C Device Mode — The Silent Vector
 The switchable USB-C port is the most dangerous feature nobody talks about. Flip the switch and the Cardputer Zero becomes a **USB device**:
 - Plug into a victim's computer → enumerate as HID keyboard → execute payload
