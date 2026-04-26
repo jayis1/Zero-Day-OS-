@@ -64,6 +64,7 @@ CATEGORIES = [
     {"name": "MEDIA",     "key": "MEDIA",    "color": (50, 255, 100)},  # Green
     {"name": "SHELL",     "key": "SHELL",    "color": (255, 75, 75)},   # Red
     {"name": "SYS",       "key": "SYS",      "color": (150, 160, 170)}, # Grey-Blue
+    {"name": "OPENCODE",  "key": "OPENCODE", "color": (255, 255, 0)},   # Yellow
     {"name": "OPEN",      "key": "OPEN",     "color": (43, 204, 255)},  # Cyan
 ]
 
@@ -171,7 +172,7 @@ TOOLS = {
         {"name": "PANIC",             "desc": "Kill all + wipe + sanitize",      "cmd": "panic",                             "need_root": False},
         {"name": "System Info",       "desc": "Show OS + hardware info",         "cmd": "cat /etc/zeroday-release; uname -a; free -m; df -h /", "need_root": False},
     ],
-    "OPEN": [
+    "OPENCODE": [
         {"name": "Open Code Editor",  "desc": "Launch OpenCode IDE",             "cmd": "opencode-session",                  "need_root": False},
         {"name": "Open Workspace",    "desc": "OpenCode in /opt/cardputer",      "cmd": "opencode-session /opt/cardputer",   "need_root": False},
         {"name": "Open Loot Dir",     "desc": "OpenCode in loot directory",      "cmd": "opencode-session /opt/cardputer/loot", "need_root": False},
