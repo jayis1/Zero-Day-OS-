@@ -7,7 +7,7 @@
 
 **The first penetration testing OS built for a credit-card-sized computer you can hold in one hand.**
 
-ZERO-DAY OS turns the M5Stack Cardputer Zero — a quad-core ARM box with WiFi, BT, Ethernet, IR, a camera, a battery, and a built-in keyboard — into a pocketable offensive security weapon. Every byte of this distro is optimized for the constraints of 512MB RAM and a 1.9" screen. No desktop. No bloat. No compromises.
+ZERO-DAY OS v1.0.1 turns the M5Stack Cardputer Zero — a quad-core ARM box with WiFi, BT, Ethernet, IR, a camera, a battery, and a built-in keyboard — into a pocketable offensive security weapon. Every byte of this distro is optimized for the constraints of 512MB RAM and a 1.9" screen. No desktop. No bloat. No compromises.
 
 ---
 
@@ -21,6 +21,7 @@ You can install Kali on a Raspberry Pi. That's not what this is.
 | 2GB+ RAM just for the DE | ~60MB idle, 512MB total — 450MB for tools |
 | Mouse required | 46-key Omni-Key system — zero mouse needed |
 | Tools are menu items you click | Tools are **2 keystrokes away** from anywhere |
+| CLI needed for file management | Native D-Pad File Explorer built directly into Pygame |
 | No hardware awareness | IR, camera, IMU, battery — all weaponized |
 | Close lid, pray | Press `Fn + P` — everything dies and sanitizes instantly |
 | You carry a laptop bag | You carry a credit card |
@@ -34,7 +35,7 @@ The Cardputer Zero is an incredible machine with brutal constraints. Every desig
 | Constraint | Our Solution |
 |---|---|
 | **512MB RAM** | `musl` where possible, `dropbear` over `sshd`, no `postgres`, no heavy daemons. Metasploit excluded. |
-| **1.9" 320×170 display** | Pygame SDL2 drill-down GUI — no desktop, 12 categories, no scrolling. |
+| **1.9" 320×170 display** | Pygame SDL2 drill-down GUI — no desktop, Premium 1x1 Carousel Menu with fluid Lerp physics, 13 categories, tactile audio feedback. |
 | **46-key matrix keyboard** | `Fn` Omni-Key system. Every tool is 2 keypresses from anywhere. No chording hell. |
 | **1500mAh battery** | Three power profiles (performance / balanced / stealth). `autosleep`. Radio toggle hotkeys. |
 | **No mouse, ever** | `i3` tiling WM backend. tmux splits. Arrow-key everything. |
@@ -58,9 +59,9 @@ The Cardputer Zero is an incredible machine with brutal constraints. Every desig
 │   │   ┌─────┐ ┌─────┐ ┌─────┐ ┌─────┐ ┌─────┐     │    │
 │   │   │ CAM │ │PAYLD│ │RADIO│ │MEDIA│ │SHELL│     │    │
 │   │   └─────┘ └─────┘ └─────┘ └─────┘ └─────┘     │    │
-│   │   ┌─────┐ ┌─────┐                                │    │
-│   │   │ SYS │ │OPEN │                                │    │
-│   │   └─────┘ └─────┘                                │    │
+│   │   ┌─────┐ ┌────────┐ ┌─────┐                     │    │
+│   │   │ SYS │ │OPENCODE│ │OPEN │                     │    │
+│   │   └─────┘ └────────┘ └─────┘                     │    │
  │   │                                                   │    │
  │   │        ┌──────────────────────┐                   │    │
  │   │        │  Tool List Scroll    │                   │    │  ← Level 2: Tools
@@ -205,6 +206,8 @@ Every tool chosen for **sub-100MB RAM at idle**. No fat daemons. No database ser
 | `sudo sdr-scan [freq_range]` | RTL-SDR frequency scan — listen to everything |
 | `sudo gpio-probe` | Enumerate I2C/SPI/UART devices on expansion port |
 | `sudo rf-capture [freq]` | Raw RF capture and analysis |
+| `mesh-chat chat` | Interactive off-grid Meshtastic LoRa chat UI |
+| `mesh-chat nodes` | List discovered LoRa mesh nodes |
 
 ### System & Field Ops
 | Command | Description |
