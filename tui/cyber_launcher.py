@@ -428,7 +428,7 @@ class CyberLauncher:
             ly = (SCREEN_H - self.logo_img.get_height()) // 2
             self.screen.blit(self.logo_img, (lx, ly))
             
-        vsurf = self.get_text_surface("ZERO-DAY OS v1.0.0", self.font_label, TEXT_SECONDARY)
+        vsurf = self.get_text_surface("ZERO-DAY OS v1.0.1", self.font_label, TEXT_SECONDARY)
         self.screen.blit(vsurf, (SCREEN_W - vsurf.get_width() - 5, SCREEN_H - 15))
         
         if pygame.time.get_ticks() - self.splash_start > 2500:
