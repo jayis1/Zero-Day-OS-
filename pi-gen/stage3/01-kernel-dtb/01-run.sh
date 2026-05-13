@@ -4,7 +4,7 @@ set -euo pipefail
 # Compiles DTS overlays and installs kernel config for Cardputer Zero
 
 # ── Compile device tree overlays ──
-OVERLAY_SRC="${BASE_DIR}/../overlays"
+OVERLAY_SRC="${PROJECT_ROOT}/overlays"
 OVERLAY_DST="${ROOTFS_DIR}/boot/overlays"
 
 mkdir -p "${OVERLAY_DST}"
@@ -30,7 +30,7 @@ else
 fi
 
 # ── Install kernel config fragment ──
-KERNEL_CFG="${BASE_DIR}/../kernel/zeroday-fragment.config"
+KERNEL_CFG="${PROJECT_ROOT}/kernel/zeroday-fragment.config"
 if [ -f "${KERNEL_CFG}" ]; then
     mkdir -p "${ROOTFS_DIR}/boot/config-overlays"
     cp "${KERNEL_CFG}" "${ROOTFS_DIR}/boot/config-overlays/zeroday.conf"

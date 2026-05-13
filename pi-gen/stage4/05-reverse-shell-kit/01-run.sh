@@ -6,8 +6,8 @@ BIN="${ROOTFS_DIR}/usr/local/bin"
 
 # Install reverse shell scripts from the project
 for script in revshell-gen revshell-listen revshell-stabilize; do
-    if [ -f "${BASE_DIR}/../scripts/reverse/${script}" ]; then
-        cp "${BASE_DIR}/../scripts/reverse/${script}" "${BIN}/${script}"
+    if [ -f "${PROJECT_ROOT}/scripts/reverse/${script}" ]; then
+        cp "${PROJECT_ROOT}/scripts/reverse/${script}" "${BIN}/${script}"
         chmod +x "${BIN}/${script}"
         echo "[zeroday] Installed: ${script}"
     else

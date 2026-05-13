@@ -40,8 +40,8 @@ XORG
 
 # Install i3 configuration
 mkdir -p "${ROOTFS_DIR}/etc/i3"
-if [ -f "${BASE_DIR}/../configs/i3/config" ]; then
-    cp "${BASE_DIR}/../configs/i3/config" "${ROOTFS_DIR}/etc/i3/config"
+if [ -f "${PROJECT_ROOT}/configs/i3/config" ]; then
+    cp "${PROJECT_ROOT}/configs/i3/config" "${ROOTFS_DIR}/etc/i3/config"
 else
     cat > "${ROOTFS_DIR}/etc/i3/config" << 'I3CONF'
 # /etc/i3/config — ZERO-DAY OS

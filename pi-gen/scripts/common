@@ -3,6 +3,12 @@ log (){
 }
 export -f log
 
+# PROJECT_ROOT resolves to the directory containing scripts/, overlays/, kernel/, tui/
+# Inside Docker: /project (mounted from project root)
+# Outside Docker: parent of pi-gen/ (BASE_DIR/..)
+PROJECT_ROOT="${PROJECT_ROOT:-${BASE_DIR}/..}"
+export PROJECT_ROOT
+
 bootstrap(){
 	local BOOTSTRAP_CMD=debootstrap
 	local BOOTSTRAP_ARGS=()

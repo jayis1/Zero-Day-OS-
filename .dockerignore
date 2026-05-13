@@ -1,0 +1,18 @@
+# Exclude build artifacts and unnecessary files
+pi-gen/work/
+pi-gen/deploy/
+*.img
+*.img.xz
+*.img.gz
+*.img.zip
+*.qcow2
+.git/
+__pycache__/
+*.pyc
+*.pyo
+.env
+.env.*
+credentials
+*.pem
+*.key
+.DS_Store

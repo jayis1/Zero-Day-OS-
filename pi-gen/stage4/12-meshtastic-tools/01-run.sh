@@ -5,8 +5,8 @@ set -euo pipefail
 BIN="${ROOTFS_DIR}/usr/local/bin"
 
 # Install mesh-chat script
-if [ -f "${BASE_DIR}/../scripts/mesh/mesh-chat" ]; then
-    cp "${BASE_DIR}/../scripts/mesh/mesh-chat" "${BIN}/mesh-chat"
+if [ -f "${PROJECT_ROOT}/scripts/mesh/mesh-chat" ]; then
+    cp "${PROJECT_ROOT}/scripts/mesh/mesh-chat" "${BIN}/mesh-chat"
     chmod +x "${BIN}/mesh-chat"
     echo "[zeroday] Installed: mesh-chat"
 fi

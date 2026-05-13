@@ -6,8 +6,8 @@ BIN="${ROOTFS_DIR}/usr/local/bin"
 
 # Install network scripts
 for script in net-discover net-quickscan net-vulnscan quick-c2 doh-proxy tunnel-mgr iot-scan; do
-    if [ -f "${BASE_DIR}/../scripts/network/${script}" ]; then
-        cp "${BASE_DIR}/../scripts/network/${script}" "${BIN}/${script}"
+    if [ -f "${PROJECT_ROOT}/scripts/network/${script}" ]; then
+        cp "${PROJECT_ROOT}/scripts/network/${script}" "${BIN}/${script}"
         chmod +x "${BIN}/${script}"
         echo "[zeroday] Installed: ${script}"
     fi

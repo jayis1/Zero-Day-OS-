@@ -4,7 +4,7 @@
 set -euo pipefail
 
 BIN="${ROOTFS_DIR}/usr/local/bin"
-TUI_SRC="${BASE_DIR}/../tui"
+TUI_SRC="${PROJECT_ROOT}/tui"
 
 # Install cyber_launcher.py
 if [ -f "${TUI_SRC}/cyber_launcher.py" ]; then

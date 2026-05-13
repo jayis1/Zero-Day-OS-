@@ -32,6 +32,14 @@ RUN touch /usr/share/keyrings/raspberrypi-archive-keyring.gpg && \
     mkdir -p /pi-gen/stage0/files && \
     cp /usr/share/keyrings/raspberrypi-archive-keyring.gpg /pi-gen/stage0/files/raspberrypi.gpg 2>/dev/null || true
 
-COPY . /pi-gen/
+ARG PROJECT_ROOT=.
+
+# Copy project root (scripts, overlays, kernel, tui) then pi-gen itself
+# Docker context is the project root (parent of pi-gen/)
+COPY scripts/ /project/scripts/
+COPY overlays/ /project/overlays/
+COPY kernel/ /project/kernel/
+COPY tui/ /project/tui/
+COPY pi-gen/ /pi-gen/
 
 VOLUME [ "/pi-gen/work", "/pi-gen/deploy" ]

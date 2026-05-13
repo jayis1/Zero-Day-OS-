@@ -19,8 +19,8 @@ EOF
 
 # Create first-boot script
 BIN="${ROOTFS_DIR}/usr/local/bin"
-if [ -f "${BASE_DIR}/../scripts/system/first-boot" ]; then
-    cp "${BASE_DIR}/../scripts/system/first-boot" "${BIN}/first-boot"
+if [ -f "${PROJECT_ROOT}/scripts/system/first-boot" ]; then
+    cp "${PROJECT_ROOT}/scripts/system/first-boot" "${BIN}/first-boot"
     chmod +x "${BIN}/first-boot"
 else
     cat > "${BIN}/first-boot" << 'FIRSTBOOT'

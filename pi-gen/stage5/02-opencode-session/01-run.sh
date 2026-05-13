@@ -4,8 +4,8 @@ set -euo pipefail
 
 BIN="${ROOTFS_DIR}/usr/local/bin"
 
-if [ -f "${BASE_DIR}/../scripts/system/opencode-session" ]; then
-    cp "${BASE_DIR}/../scripts/system/opencode-session" "${BIN}/opencode-session"
+if [ -f "${PROJECT_ROOT}/scripts/system/opencode-session" ]; then
+    cp "${PROJECT_ROOT}/scripts/system/opencode-session" "${BIN}/opencode-session"
     chmod +x "${BIN}/opencode-session"
     echo "[zeroday] Installed: opencode-session"
 else

@@ -4,7 +4,7 @@ set -euo pipefail
 
 BIN="${ROOTFS_DIR}/usr/local/bin"
 SYSTEMD="${ROOTFS_DIR}/etc/systemd/system"
-SCRIPT_SRC="${BASE_DIR}/../scripts"
+SCRIPT_SRC="${PROJECT_ROOT}/scripts"
 
 # Install all system scripts
 mkdir -p "${BIN}"

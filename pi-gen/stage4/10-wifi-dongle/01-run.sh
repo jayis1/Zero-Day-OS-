@@ -7,8 +7,8 @@ set -euo pipefail
 BIN="${ROOTFS_DIR}/usr/local/bin"
 
 # Install the dongle-setup script
-if [ -f "${BASE_DIR}/../scripts/dongle/dongle-setup" ]; then
-    cp "${BASE_DIR}/../scripts/dongle/dongle-setup" "${BIN}/dongle-setup"
+if [ -f "${PROJECT_ROOT}/scripts/dongle/dongle-setup" ]; then
+    cp "${PROJECT_ROOT}/scripts/dongle/dongle-setup" "${BIN}/dongle-setup"
     chmod +x "${BIN}/dongle-setup"
 fi
 

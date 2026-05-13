@@ -48,8 +48,8 @@ fi
 EOF
 
 # ── Write the MOTD ──
-if [ -f "${BASE_DIR}/../configs/motd/motd" ]; then
-    cp "${BASE_DIR}/../configs/motd/motd" "${ROOTFS_DIR}/etc/motd"
+if [ -f "${PROJECT_ROOT}/configs/motd/motd" ]; then
+    cp "${PROJECT_ROOT}/configs/motd/motd" "${ROOTFS_DIR}/etc/motd"
 else
     cat > "${ROOTFS_DIR}/etc/motd" << 'MOTD'
 ╔══════════════════════════════════════════════════╗

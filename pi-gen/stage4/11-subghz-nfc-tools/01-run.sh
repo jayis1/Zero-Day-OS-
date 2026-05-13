@@ -6,8 +6,8 @@ BIN="${ROOTFS_DIR}/usr/local/bin"
 
 # ── Sub-GHz tools ──
 for script in subghz-scan subghz-record subghz-replay; do
-    if [ -f "${BASE_DIR}/../scripts/subghz/${script}" ]; then
-        cp "${BASE_DIR}/../scripts/subghz/${script}" "${BIN}/${script}"
+    if [ -f "${PROJECT_ROOT}/scripts/subghz/${script}" ]; then
+        cp "${PROJECT_ROOT}/scripts/subghz/${script}" "${BIN}/${script}"
         chmod +x "${BIN}/${script}"
         echo "[zeroday] Installed: ${script}"
     fi
@@ -15,8 +15,8 @@ done
 
 # ── NFC tools ──
 for script in nfc-read nfc-clone nfc-emulate; do
-    if [ -f "${BASE_DIR}/../scripts/nfc/${script}" ]; then
-        cp "${BASE_DIR}/../scripts/nfc/${script}" "${BIN}/${script}"
+    if [ -f "${PROJECT_ROOT}/scripts/nfc/${script}" ]; then
+        cp "${PROJECT_ROOT}/scripts/nfc/${script}" "${BIN}/${script}"
         chmod +x "${BIN}/${script}"
         echo "[zeroday] Installed: ${script}"
     fi
