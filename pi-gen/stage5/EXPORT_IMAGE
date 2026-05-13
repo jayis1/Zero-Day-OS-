@@ -1,4 +1,4 @@
-IMG_SUFFIX="-cardputer-uncleaned"
-EXPORT_IMAGE="zeroday-os-uncleaned"
-NOOBS_NAME="ZERO-DAY OS (Pre-cleanup)"
-NOOBS_DESCRIPTION="Intermediate image — use -cardputer image instead"
+IMG_SUFFIX="-full"
+EXPORT_IMAGE="zeroday-os"
+NOOBS_NAME="ZERO-DAY OS"
+NOOBS_DESCRIPTION="ZERO-DAY OS — Complete pen-test system for M5Stack Cardputer Zero"
