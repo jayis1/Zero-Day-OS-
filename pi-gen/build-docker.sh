@@ -83,9 +83,10 @@ fi
 # Modify original build-options to allow config file to be mounted in the docker container
 BUILD_OPTS="$(echo "${BUILD_OPTS:-}" | sed -E 's@\-c\s?([^ ]+)@-c /config@')"
 
-# Check the arch of the machine we're running on. If it's 64-bit, use a 32-bit base image instead
+# Check the arch of the machine we're running on.
+# For arm64 target, we use a native arm64 or x86_64 base image.
 case "$(uname -m)" in
-  x86_64|aarch64)
+  x86_64)
     BASE_IMAGE=i386/debian:trixie
     ;;
   *)
@@ -104,10 +105,11 @@ else
   DOCKER_CMDLINE_POST=""
 fi
 
-# Check if binfmt_misc is required
+# Check if binfmt_misc is required for cross-architecture build
 binfmt_misc_required=1
 case $(uname -m) in
   aarch64)
+    # Building natively on ARM64 — no emulation needed
     binfmt_misc_required=0
     ;;
   arm*)
@@ -115,36 +117,32 @@ case $(uname -m) in
     ;;
 esac
 
-# Check if qemu-arm and /proc/sys/fs/binfmt_misc are present
+# Check if qemu-user-static is available for arm64 cross-build on x86_64
 if [[ "${binfmt_misc_required}" == "1" ]]; then
-  # Try both qemu-arm (Debian) and qemu-arm-static (Arch/Arch-derived)
-  qemu_arm=""
-  for candidate in qemu-arm-static qemu-arm; do
-    if path=$(which "$candidate" 2>/dev/null); then
-      qemu_arm="$path"
-      break
-    fi
-  done
-  if [ -z "$qemu_arm" ]; then
-    echo "qemu-arm not found (please install qemu-user-static or qemu-user-binfmt)"
-    exit 1
-  fi
-  if [ ! -f /proc/sys/fs/binfmt_misc/register ]; then
-    echo "binfmt_misc required but not mounted, trying to mount it..."
-    if ! mount binfmt_misc -t binfmt_misc /proc/sys/fs/binfmt_misc ; then
-        echo "mounting binfmt_misc failed"
+    qemu_aarch64=""
+    for candidate in qemu-aarch64-static qemu-aarch64; do
+        if path=$(which "$candidate" 2>/dev/null); then
+            qemu_aarch64="$path"
+            break
+        fi
+    done
+    if [ -z "$qemu_aarch64" ]; then
+        echo "qemu-aarch64-static not found (please install qemu-user-static or qemu-user-binfmt)"
         exit 1
     fi
-    echo "binfmt_misc mounted"
-  fi
-  if ! grep -q "^interpreter ${qemu_arm}" /proc/sys/fs/binfmt_misc/qemu-arm* 2>/dev/null ; then
-    reg="echo ':qemu-arm-rpi:M::"\
-"\x7fELF\x01\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00\x28\x00:"\
-"\xff\xff\xff\xff\xff\xff\xff\x00\xff\xff\xff\xff\xff\xff\xff\xff\xfe\xff\xff\xff:"\
-"${qemu_arm}:F' > /proc/sys/fs/binfmt_misc/register"
-    echo "Registering qemu-arm for binfmt_misc..."
-    sudo bash -c "${reg}" 2>/dev/null || true
-  fi
+    if [ ! -f /proc/sys/fs/binfmt_misc/register ]; then
+        echo "binfmt_misc required but not mounted, trying to mount it..."
+        if ! mount binfmt_misc -t binfmt_misc /proc/sys/fs/binfmt_misc ; then
+            echo "mounting binfmt_misc failed"
+            exit 1
+        fi
+        echo "binfmt_misc mounted"
+    fi
+    # Register qemu-aarch64 for arm64 binaries
+    if ! grep -q "^interpreter ${qemu_aarch64}" /proc/sys/fs/binfmt_misc/qemu-aarch64* 2>/dev/null ; then
+        echo "Registering qemu-aarch64 for binfmt_misc..."
+        sudo bash -c "echo ':qemu-aarch64:M::\x7fELF\x02\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00\xb7\x00:\xff\xff\xff\xff\xff\xff\xff\x00\xff\xff\xff\xff\xff\xff\xff\xff\xfe\xff\xff\xff:${qemu_aarch64}:F' > /proc/sys/fs/binfmt_misc/register" 2>/dev/null || true
+    fi
 fi
 
 trap 'echo "got CTRL+C... please wait 5s" && ${DOCKER} stop -t 5 ${DOCKER_CMDLINE_NAME}' SIGINT SIGTERM

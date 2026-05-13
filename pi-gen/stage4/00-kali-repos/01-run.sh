@@ -1,8 +1,8 @@
 #!/bin/bash -e
 set -euo pipefail
 # stage4/00-kali-repos/01-run.sh — Add Kali Rolling repository with low priority
-# Note: Kali armhf has limited package availability. Install failures are
-# gracefully handled — packages that aren't available for armhf will be skipped.
+# Note: Kali arm64 has limited package availability compared to amd64. Install failures are
+# gracefully handled — packages that aren't available for arm64 will be skipped.
 
 # Add Kali repository
 cat > "${ROOTFS_DIR}/etc/apt/sources.list.d/kali.list" << 'EOF'

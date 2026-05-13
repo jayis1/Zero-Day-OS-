@@ -4,14 +4,13 @@ set -euo pipefail
 
 BIN="${ROOTFS_DIR}/usr/local/bin"
 
-# OpenCode is a Go/Rust binary — not a Python package.
-# Try downloading the armhf binary, fall back to a stub.
+# OpenCode is a Go/Rust binary — try downloading the aarch64 binary, fall back to a stub.
 on_chroot << 'OPENCODE_INSTALL'
 # Determine architecture for binary download
-ARCH=$(dpkg --print-architecture 2>/dev/null || echo "armhf")
+ARCH=$(dpkg --print-architecture 2>/dev/null || echo "arm64")
 
-# Try GitHub release binary (armv7 = armhf on Linux)
-for SUFFIX in "linux-armv7" "linux-armhf" "linux-arm"; do
+# Try GitHub release binary (aarch64/arm64 on Linux)
+for SUFFIX in "linux-arm64" "linux-aarch64" "linux-armv7" "linux-armhf"; do
     URL="https://github.com/opencode-ai/opencode/releases/latest/download/opencode-${SUFFIX}"
     if curl -sLf "${URL}" -o /usr/local/bin/opencode 2>/dev/null; then
         chmod +x /usr/local/bin/opencode
@@ -24,12 +23,12 @@ done
 if [ ! -x /usr/local/bin/opencode ]; then
     cat > /usr/local/bin/opencode << 'STUB'
 #!/bin/sh
-echo "OpenCode not installed (no armhf binary available)."
+echo "OpenCode not installed (no aarch64 binary available yet)."
 echo "Install manually from: https://github.com/opencode-ai/opencode/releases"
 echo "Or try: pip3 install opencode-ai (Python wrapper)"
 STUB
     chmod +x /usr/local/bin/opencode
-    echo "[zeroday] OpenCode binary not available for armhf — created stub"
+    echo "[zeroday] OpenCode binary not available for aarch64 — created stub"
 fi
 OPENCODE_INSTALL
 

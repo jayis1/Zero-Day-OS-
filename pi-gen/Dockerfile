@@ -1,15 +1,19 @@
+# Check the arch of the machine we're running on — for arm64 we build natively or use QEMU
 ARG BASE_IMAGE=debian:trixie
 FROM ${BASE_IMAGE}
 
 ENV DEBIAN_FRONTEND=noninteractive
+ENV ARCH=arm64
 
-RUN apt-get -y update && \
+RUN dpkg --add-architecture arm64 && \
+    apt-get -y update && \
     apt-get -y install --no-install-recommends \
         git vim parted \
         quilt coreutils qemu-user-static debootstrap zerofree zip dosfstools e2fsprogs \
         libarchive-tools libcap2-bin rsync grep udev xz-utils curl xxd file kmod bc \
-        binfmt-support ca-certificates fdisk gpg pigz arch-test \
-        debian-archive-keyring \
+        binfmt-support ca-certificates fdisk pigz arch-test \
+        debian-archive-keyring gnupg \
+        crossbuild-essential-arm64 \
     && rm -rf /var/lib/apt/lists/*
 
 # Download RPi GPG keys — try multiple sources

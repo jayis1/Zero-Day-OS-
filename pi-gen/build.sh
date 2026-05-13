@@ -179,7 +179,7 @@ export PI_GEN=${PI_GEN:-zeroday-pi-gen}
 export PI_GEN_REPO=${PI_GEN_REPO:-https://github.com/RPi-Distro/pi-gen}
 export PI_GEN_RELEASE=${PI_GEN_RELEASE:-ZERO-DAY OS}
 
-export ARCH=armhf
+export ARCH=${ARCH:-arm64}
 export RELEASE=${RELEASE:-bookworm}
 export IMG_NAME="${IMG_NAME:-zeroday-os}"
 
@@ -256,7 +256,7 @@ trap term EXIT INT TERM
 dependencies_check "${BASE_DIR}/depends"
 
 PAGESIZE=$(getconf PAGESIZE)
-if [ "$ARCH" == "armhf" ] && [ "$PAGESIZE" != "4096" ]; then
+if [ "$ARCH" = "armhf" ] && [ "$PAGESIZE" != "4096" ]; then
 	echo
 	echo "ERROR: Building an $ARCH image requires a kernel with a 4k page size (current: $PAGESIZE)"
 	echo "On Raspberry Pi OS (64-bit), add to /boot/firmware/config.txt:"

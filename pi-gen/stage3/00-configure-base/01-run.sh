@@ -110,8 +110,8 @@ cat > "${ROOTFS_DIR}/etc/zeroday-release" << 'EOF'
 ZERO-DAY OS v0.1-pre
 Build: DATE_PLACEHOLDER
 Kernel: PLACEHOLDER
-Hardware: M5Stack Cardputer Zero (CM0)
-Arch: armhf
+Hardware: M5Stack Cardputer Zero (RP3A0 SoC, Pi Zero 2W die)
+Arch: aarch64
 EOF
 
 # Configure bash

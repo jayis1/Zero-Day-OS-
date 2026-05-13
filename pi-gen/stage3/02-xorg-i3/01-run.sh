@@ -2,11 +2,11 @@
 set -euo pipefail
 # stage3/02-xorg-i3/01-run.sh — Install Xorg + i3 window manager
 
-# Configure Xorg for ST7789v3 LCD (framebuffer)
+# Configure Xorg for ST7789V LCD (320x170, framebuffer)
 mkdir -p "${ROOTFS_DIR}/etc/X11"
 cat > "${ROOTFS_DIR}/etc/X11/xorg.conf" << 'XORG'
 Section "Device"
-    Identifier "ST7789"
+    Identifier "ST7789V"
     Driver "fbdev"
     Option "fbdev" "/dev/fb0"
     Option "ShadowFB" "off"
@@ -14,17 +14,27 @@ EndSection
 
 Section "Screen"
     Identifier "LCD"
-    Device "ST7789"
+    Device "ST7789V"
     DefaultDepth 16
     SubSection "Display"
         Depth 16
-        Modes "320x240"
+        # 320x170 native resolution — do NOT hardcode, read from fbdev
+        Modes "320x170"
     EndSubSection
 EndSection
 
 Section "ServerLayout"
     Identifier "Default"
     Screen "LCD"
+EndSection
+
+Section "InputClass"
+    Identifier "CardputerZero Keyboard"
+    MatchProduct "tca8418"
+    MatchDevicePath "/dev/input/by-path/platform-3f804000.i2c-event*"
+    Driver "libinput"
+    Option "xkb_model" "cardputer"
+    Option "xkb_layout" "us"
 EndSection
 XORG
 

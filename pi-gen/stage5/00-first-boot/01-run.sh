@@ -58,8 +58,8 @@ cat > /etc/zeroday-release << RELEASE
 ZERO-DAY OS v0.1-pre
 Build: PLACEHOLDER
 Kernel: $(uname -r)
-Hardware: M5Stack Cardputer Zero (CM0)
-Arch: armhf
+Hardware: M5Stack Cardputer Zero (RP3A0 SoC)
+Arch: aarch64
 RELEASE
 
 # Mark first-boot as complete — disable the service

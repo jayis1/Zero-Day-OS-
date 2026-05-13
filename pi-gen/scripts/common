@@ -9,7 +9,7 @@ bootstrap(){
 
 	export http_proxy=${APT_PROXY}
 
-	BOOTSTRAP_ARGS+=(--arch armhf)
+	BOOTSTRAP_ARGS+=(--arch "${ARCH}")
 	BOOTSTRAP_ARGS+=(--components "main,contrib,non-free,non-free-firmware")
 	# Use the appropriate keyring — RPi for raspbian repos, Debian keyring for debian repos
 	if echo "$@" | grep -q "raspberrypi\|raspbian"; then
@@ -33,7 +33,11 @@ bootstrap(){
 	BOOTSTRAP_ARGS+=("$@")
 	printf -v BOOTSTRAP_STR '%q ' "${BOOTSTRAP_ARGS[@]}"
 
-	setarch linux32 capsh $CAPSH_ARG -- -c "'${BOOTSTRAP_CMD}' $BOOTSTRAP_STR" || true
+	if [ "${ARCH}" = "arm64" ]; then
+		"${BOOTSTRAP_CMD}" "${BOOTSTRAP_ARGS[@]}" "$@"
+	else
+		setarch linux32 capsh $CAPSH_ARG -- -c "'${BOOTSTRAP_CMD}' $BOOTSTRAP_STR" || true
+	fi
 
 	rm -f wget-log*
 
@@ -131,7 +135,11 @@ on_chroot() {
 		cp /etc/resolv.conf "${ROOTFS_DIR}/etc/resolv.conf"
 	fi
 
-	setarch linux32 capsh $CAPSH_ARG "--chroot=${ROOTFS_DIR}/" -- -e "$@"
+	if [ "${ARCH}" = "arm64" ]; then
+		chroot "${ROOTFS_DIR}/" "$@"
+	else
+		setarch linux32 capsh $CAPSH_ARG "--chroot=${ROOTFS_DIR}/" -- -e "$@"
+	fi
 }
 export -f on_chroot
 

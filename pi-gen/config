@@ -3,7 +3,7 @@
 
 IMG_NAME="zeroday-os"
 RELEASE="bookworm"
-ARCH="armhf"
+ARCH="arm64"
 
 # Target hostname
 TARGET_HOSTNAME="zeroday"
