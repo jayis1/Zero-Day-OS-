@@ -93,7 +93,7 @@ case "$(uname -m)" in
     BASE_IMAGE=debian:trixie
     ;;
 esac
-${DOCKER} build --build-arg BASE_IMAGE=${BASE_IMAGE} -t pi-gen "${DIR}/.."
+${DOCKER} build --build-arg BASE_IMAGE=${BASE_IMAGE} -f "${DIR}/Dockerfile" -t pi-gen "${DIR}/.."
 
 if [ "${CONTAINER_EXISTS}" != "" ]; then
   DOCKER_CMDLINE_NAME="${CONTAINER_NAME}_cont"
@@ -154,6 +154,7 @@ time ${DOCKER} run \
   --volume "${CONFIG_FILE}":/config:ro \
   --volume "${DIR}/../tui":/tui:ro \
   -e "GIT_HASH=${GIT_HASH}" \
+  -e "PROJECT_ROOT=/project" \
   $DOCKER_CMDLINE_POST \
   pi-gen \
   bash -e -o pipefail -c "

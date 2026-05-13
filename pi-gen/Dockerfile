@@ -4,6 +4,7 @@ FROM ${BASE_IMAGE}
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV ARCH=arm64
+ENV PROJECT_ROOT=/project
 
 RUN dpkg --add-architecture arm64 && \
     apt-get -y update && \
