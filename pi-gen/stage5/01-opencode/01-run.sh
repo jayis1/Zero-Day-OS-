@@ -1,39 +1,45 @@
 #!/bin/bash -e
 set -euo pipefail
-# stage5/01-opencode/01-run.sh — Install OpenCode
+# stage5/01-opencode/01-run.sh — Install OpenCode CLI (aarch64)
 
 BIN="${ROOTFS_DIR}/usr/local/bin"
+OPENCODE_VERSION="v1.14.49"
+OPENCODE_URL="https://github.com/anomalyco/opencode/releases/download/${OPENCODE_VERSION}/opencode-linux-arm64.tar.gz"
 
-# OpenCode is a Go/Rust binary — try downloading the aarch64 binary, fall back to a stub.
-on_chroot << 'OPENCODE_INSTALL'
-# Determine architecture for binary download
-ARCH=$(dpkg --print-architecture 2>/dev/null || echo "arm64")
+TMP="$(mktemp -d)"
+echo "[zeroday] Downloading OpenCode ${OPENCODE_VERSION} for arm64..."
 
-# Try GitHub release binary (aarch64/arm64 on Linux)
-for SUFFIX in "linux-arm64" "linux-aarch64" "linux-armv7" "linux-armhf"; do
-    URL="https://github.com/opencode-ai/opencode/releases/latest/download/opencode-${SUFFIX}"
-    if curl -sLf "${URL}" -o /usr/local/bin/opencode 2>/dev/null; then
-        chmod +x /usr/local/bin/opencode
-        echo "[zeroday] OpenCode installed: opencode-${SUFFIX}"
-        break
-    fi
-done
-
-# If no binary was downloaded, create a stub
-if [ ! -x /usr/local/bin/opencode ]; then
-    cat > /usr/local/bin/opencode << 'STUB'
+if curl -sLf "${OPENCODE_URL}" -o "${TMP}/opencode-linux-arm64.tar.gz" 2>/dev/null; then
+    tar -xzf "${TMP}/opencode-linux-arm64.tar.gz" -C "${TMP}/" 2>/dev/null || true
+    # Find the binary in the extracted archive
+    OPENCODE_BIN="$(find "${TMP}" -maxdepth 2 -type f -name 'opencode' ! -name '*.sha256' 2>/dev/null | head -1)"
+    if [ -n "${OPENCODE_BIN}" ] && [ -x "${OPENCODE_BIN}" ] ; then
+        cp "${OPENCODE_BIN}" "${BIN}/opencode"
+        chmod +x "${BIN}/opencode"
+        echo "[zeroday] OpenCode ${OPENCODE_VERSION} installed successfully"
+    else
+        echo "[zeroday] WARNING: Could not find opencode binary in archive, creating stub"
+        cat > "${BIN}/opencode" << 'STUB'
 #!/bin/sh
-echo "OpenCode not installed (no aarch64 binary available yet)."
-echo "Install manually from: https://github.com/opencode-ai/opencode/releases"
-echo "Or try: pip3 install opencode-ai (Python wrapper)"
+echo "OpenCode not installed (binary extraction failed)."
+echo "Install manually from: https://github.com/anomalyco/opencode/releases"
 STUB
-    chmod +x /usr/local/bin/opencode
-    echo "[zeroday] OpenCode binary not available for aarch64 — created stub"
+        chmod +x "${BIN}/opencode"
+    fi
+else
+    echo "[zeroday] WARNING: Could not download OpenCode, creating stub"
+    cat > "${BIN}/opencode" << 'STUB'
+#!/bin/sh
+echo "OpenCode not installed (download failed)."
+echo "Install manually from: https://github.com/anomalyco/opencode/releases"
+STUB
+    chmod +x "${BIN}/opencode"
 fi
-OPENCODE_INSTALL
+
+rm -rf "${TMP}"
 
 # Create workspace directory
 mkdir -p "${ROOTFS_DIR}/opt/cardputer/workspace"
 mkdir -p "${ROOTFS_DIR}/opt/cardputer/config/opencode"
 
-echo "[zeroday] OpenCode installed."
+echo "[zeroday] OpenCode install complete."
