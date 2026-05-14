@@ -13,7 +13,7 @@ RUN dpkg --add-architecture arm64 && \
         quilt coreutils qemu-user-static debootstrap zerofree zip dosfstools e2fsprogs \
         libarchive-tools libcap2-bin rsync grep udev xz-utils curl xxd file kmod bc \
         binfmt-support ca-certificates fdisk pigz arch-test \
-        debian-archive-keyring gnupg \
+        debian-archive-keyring gnupg device-tree-compiler \
         crossbuild-essential-arm64 \
     && rm -rf /var/lib/apt/lists/*
 
