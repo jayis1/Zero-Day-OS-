@@ -8,7 +8,7 @@
 
 ZERO-DAY OS v4.3.0 turns the M5Stack Cardputer Zero — a quad-core ARM64 box with WiFi, BT, IR, a camera, a battery, and a built-in keyboard — into a pocketable offensive security weapon. Every byte of this distro is optimized for the constraints of 512MB RAM and a 1.9" screen. No desktop. No bloat. No compromises. Powered by a custom Rust Wayland compositor (Smithay 0.7) and terminal emulator, both built for the hardware.
 
-[![Release v4.3.0](https://img.shields.io/github/v/release/jayis1/Zero-Day-OS-?label=latest%20release)](https://github.com/jayis1/Zero-Day-OS-/releases/latest)
+[![Release v4.5.0](https://img.shields.io/github/v/release/jayis1/Zero-Day-OS-?label=latest%20release)](https://github.com/jayis1/Zero-Day-OS-/releases/latest)
 
 ---
 
