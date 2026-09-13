@@ -1,0 +1,271 @@
+#!/bin/bash
+set -euo pipefail
+# /usr/local/bin/http-probe
+# Rapid HTTP/HTTPS service prober and directory bruteforcer
+# Given a host/range, finds web services, grabs banners, screenshots titles,
+# runs a quick path check and flags juicy endpoints.
+#
+# Usage: http-probe <target> [mode] [port]
+#   target — IP, hostname, CIDR, or 'auto' (reads from latest nmap XML)
+#   mode   — banner | paths | full | screenshot | auto (default: full)
+#   port   — override port (default: 80,443,8080,8443,8888,3000,5000)
+
+LOOT="/opt/cardputer/loot/recon"
+TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+mkdir -p "$LOOT"
+
+RED='\033[0;31m'
+CYAN='\033[0;36m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m'
+
+hit()  { echo -e "${RED}[JUICY]${NC} $*" | tee -a "$OUTFILE"; }
+info() { echo -e "${CYAN}[*]${NC} $*"    | tee -a "$OUTFILE"; }
+ok()   { echo -e "${GREEN}[+]${NC} $*"   | tee -a "$OUTFILE"; }
+warn() { echo -e "${YELLOW}[?]${NC} $*"  | tee -a "$OUTFILE"; }
+
+# Juicy path list — endpoints worth checking on any web server
+JUICY_PATHS=(
+    # Admin panels
+    "/admin" "/administrator" "/admin.php" "/wp-admin" "/wp-login.php"
+    "/phpmyadmin" "/pma" "/mysql" "/adminer" "/adminer.php"
+    "/panel" "/control" "/cpanel" "/plesk" "/webmin"
+    # Auth
+    "/login" "/signin" "/auth" "/sso" "/oauth" "/saml"
+    # APIs
+    "/api" "/api/v1" "/api/v2" "/rest" "/graphql" "/swagger"
+    "/swagger.json" "/openapi.json" "/openapi.yaml" "/swagger-ui.html"
+    "/api-docs" "/.well-known"
+    # Dev/debug
+    "/debug" "/test" "/dev" "/staging" "/console" "/shell"
+    "/phpinfo.php" "/info.php" "/test.php" "/server-status" "/server-info"
+    "/actuator" "/actuator/env" "/actuator/health" "/actuator/mappings"
+    "/metrics" "/health" "/status" "/ping"
+    # Config/secrets
+    "/.env" "/.git" "/.git/config" "/.svn" "/.htaccess"
+    "/config" "/config.php" "/config.yml" "/config.json" "/settings.py"
+    "/web.config" "/app.config" "/application.yml" "/application.properties"
+    "/robots.txt" "/sitemap.xml" "/crossdomain.xml" "/security.txt"
+    # Backup/dumps
+    "/backup" "/backup.zip" "/backup.tar.gz" "/db.sql" "/dump.sql"
+    "/backup.sql" "/.backup" "/old" "/archive"
+    # Common apps
+    "/jenkins" "/gitlab" "/jira" "/confluence" "/sonar" "/nexus"
+    "/portainer" "/traefik" "/kibana" "/grafana" "/prometheus"
+    "/nagios" "/zabbix" "/cacti"
+    # Shell/upload
+    "/upload" "/uploads" "/files" "/shell.php" "/cmd.php" "/c99.php"
+)
+
+probe_url() {
+    local url="$1"
+    local timeout="${2:-5}"
+
+    local resp
+    resp=$(curl -sk -L -o - --max-time "$timeout" \
+        -D /tmp/http_headers_$$ \
+        -w "\nHTTP_CODE:%{http_code}\nFINAL_URL:%{url_effective}\nTIME:%{time_total}" \
+        "$url" 2>/dev/null)
+
+    local code
+    code=$(echo "$resp" | grep "^HTTP_CODE:" | cut -d: -f2)
+    local final_url
+    final_url=$(echo "$resp" | grep "^FINAL_URL:" | cut -d: -f2-)
+    local body
+    body=$(echo "$resp" | grep -v "^HTTP_CODE:\|^FINAL_URL:\|^TIME:")
+
+    # Extract title
+    local title
+    title=$(echo "$body" | grep -oi "<title>[^<]*</title>" | head -1 | sed 's/<[^>]*>//g' | tr -s ' ' | head -c 80)
+
+    # Extract server header
+    local server
+    server=$(grep -i "^server:" /tmp/http_headers_$$ 2>/dev/null | head -1 | cut -d: -f2- | tr -d '\r' | xargs)
+
+    # Extract X-Powered-By
+    local powered
+    powered=$(grep -i "^x-powered-by:" /tmp/http_headers_$$ 2>/dev/null | head -1 | cut -d: -f2- | tr -d '\r' | xargs)
+
+    rm -f /tmp/http_headers_$$
+
+    echo "${code}|${title}|${server}|${powered}|${final_url}"
+}
+
+banner_check() {
+    local host="$1"
+    local ports="${2:-80,443,8080,8443,8888,3000,5000,8000,9090,10000}"
+
+    info "Banner check: $host"
+    IFS=',' read -ra port_list <<< "$ports"
+
+    for port in "${port_list[@]}"; do
+        local proto="http"
+        [[ "$port" == "443" || "$port" == "8443" ]] && proto="https"
+
+        for p in http https; do
+            local url="${p}://${host}:${port}/"
+            local result
+            result=$(probe_url "$url" 3)
+            local code
+            code=$(echo "$result" | cut -d'|' -f1)
+
+            [ -z "$code" ] || [ "$code" = "000" ] && continue
+
+            local title server powered
+            title=$(echo "$result" | cut -d'|' -f2)
+            server=$(echo "$result" | cut -d'|' -f3)
+            powered=$(echo "$result" | cut -d'|' -f4)
+
+            local line="${p}://${host}:${port}/  [${code}]"
+            [ -n "$title" ]   && line="$line  title:\"$title\""
+            [ -n "$server" ]  && line="$line  server:$server"
+            [ -n "$powered" ] && line="$line  powered-by:$powered"
+
+            case "$code" in
+                200) ok "$line" ;;
+                301|302|303|307|308) warn "REDIRECT $line" ;;
+                401|403) warn "AUTH $line" ;;
+                500|503) warn "ERROR $line" ;;
+            esac
+
+            # Flag interesting tech
+            echo "$title $server $powered" | grep -iqE "wordpress|drupal|joomla|magento|shopify" && hit "CMS detected: $line"
+            echo "$title $server $powered" | grep -iqE "jenkins|gitlab|jira|confluence|sonar" && hit "DevOps app: $line"
+            echo "$title $server $powered" | grep -iqE "phpmyadmin|adminer|pgadmin|mongo-express" && hit "DB admin UI: $line"
+            echo "$title $server $powered" | grep -iqE "grafana|kibana|prometheus|portainer" && hit "Dashboard: $line"
+        done
+    done
+}
+
+path_check() {
+    local base_url="$1"
+
+    info "Path check: $base_url (${#JUICY_PATHS[@]} paths)"
+    local found=0
+
+    for path in "${JUICY_PATHS[@]}"; do
+        local url="${base_url}${path}"
+        local result
+        result=$(probe_url "$url" 3)
+        local code
+        code=$(echo "$result" | cut -d'|' -f1)
+
+        [ -z "$code" ] || [ "$code" = "000" ] && continue
+
+        local title
+        title=$(echo "$result" | cut -d'|' -f2)
+
+        case "$code" in
+            200)
+                hit "FOUND [${code}] ${url}  ${title}"
+                found=$(( found + 1 ))
+                ;;
+            401|403)
+                warn "AUTH  [${code}] ${url}"
+                ;;
+            301|302)
+                warn "REDIR [${code}] ${url}"
+                ;;
+        esac
+    done
+
+    info "Path check complete: $found juicy paths found"
+}
+
+full_probe() {
+    local host="$1"
+    local ports="${2:-80,443,8080,8443,8888,3000,5000}"
+
+    OUTFILE="$LOOT/http_probe_${host//\//_}_${TIMESTAMP}.txt"
+    info "HTTP probe: $host  →  $OUTFILE"
+
+    banner_check "$host" "$ports"
+
+    # Run path checks on all responding services
+    IFS=',' read -ra port_list <<< "$ports"
+    for port in "${port_list[@]}"; do
+        for proto in http https; do
+            local url="${proto}://${host}:${port}"
+            local result
+            result=$(probe_url "$url/" 3)
+            local code
+            code=$(echo "$result" | cut -d'|' -f1)
+            [ -z "$code" ] || [ "$code" = "000" ] && continue
+            [[ "$code" =~ ^[234] ]] && path_check "$url"
+        done
+    done
+}
+
+auto_discover() {
+    local xml
+    xml=$(find "$LOOT" -name "*.xml" 2>/dev/null | sort | tail -1)
+    [ -z "$xml" ] && { echo "[!] No nmap XML found in $LOOT"; exit 1; }
+    info "Auto-discovering HTTP services from: $xml"
+
+    python3 -c "
+import xml.etree.ElementTree as ET, sys
+tree = ET.parse(sys.argv[1])
+web_ports = {'80','443','8080','8443','8000','8888','3000','5000','9090','10000'}
+for host in tree.findall('.//host'):
+    state = host.find('.//status')
+    if state is None or state.get('state') != 'up': continue
+    addr = host.find('.//address[@addrtype=\"ipv4\"]')
+    if addr is None: continue
+    ip = addr.get('addr')
+    for port in host.findall('.//port'):
+        if port.get('portid') in web_ports:
+            st = port.find('state')
+            if st is not None and st.get('state') == 'open':
+                svc = port.find('service')
+                name = svc.get('name','') if svc is not None else ''
+                if 'http' in name or port.get('portid') in {'80','443','8080','8443'}:
+                    print(ip + ':' + port.get('portid'))
+" "$xml" 2>/dev/null | while IFS=: read -r ip port; do
+        OUTFILE="$LOOT/http_probe_${ip}_${TIMESTAMP}.txt"
+        full_probe "$ip" "$port"
+    done
+}
+
+TARGET="${1:-help}"
+MODE="${2:-full}"
+PORTS="${3:-80,443,8080,8443,8888,3000,5000}"
+OUTFILE="$LOOT/http_probe_${TARGET//\//_}_${TIMESTAMP}.txt"
+touch "$OUTFILE" 2>/dev/null || OUTFILE="/tmp/http_probe_$TIMESTAMP.txt"
+
+case "$TARGET" in
+    help|--help|-h)
+        echo "Usage: http-probe <target> [mode] [ports]"
+        echo ""
+        echo "Target: IP, hostname, or 'auto' (reads latest nmap XML)"
+        echo "Mode:   banner | paths | full (default) | auto"
+        echo "Ports:  comma-separated (default: 80,443,8080,8443,8888,3000,5000)"
+        echo ""
+        echo "Examples:"
+        echo "  http-probe 192.168.1.1              # full probe, default ports"
+        echo "  http-probe 10.0.0.5 paths 80,8080   # path check on specific ports"
+        echo "  http-probe auto                      # auto-discover from last nmap"
+        exit 0
+        ;;
+    auto)
+        auto_discover
+        ;;
+    *)
+        case "$MODE" in
+            banner)    banner_check "$TARGET" "$PORTS" ;;
+            paths)
+                banner_check "$TARGET" "$PORTS"
+                IFS=',' read -ra plist <<< "$PORTS"
+                for port in "${plist[@]}"; do
+                    for proto in http https; do
+                        path_check "${proto}://${TARGET}:${port}"
+                    done
+                done
+                ;;
+            full|*)    full_probe "$TARGET" "$PORTS" ;;
+        esac
+        ;;
+esac
+
+echo ""
+info "Results saved: $OUTFILE"
