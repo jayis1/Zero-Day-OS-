@@ -10,7 +10,6 @@ build-release:
 	cargo build --release
 
 cross-build:
-	docker build -t zeroday-comp-cross -f ../compositor/Cross.Dockerfile ../compositor/ 2>/dev/null || true
 	cross build --release --target $(TARGET)
 
 release: cross-build
@@ -37,7 +36,4 @@ install: build-release
 
 deps:
 	@echo "Installing cross-compilation dependencies..."
-	sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu \
-		libwayland-dev libdrm-dev libgbm-dev libegl-dev libgles-dev \
-		libinput-dev libudev-dev libevdev-dev libxkbcommon-dev \
-		libpixman-1-dev libsystemd-dev wayland-protocols pkg-config
+	sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
