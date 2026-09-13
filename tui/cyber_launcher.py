@@ -224,6 +224,9 @@ TOOLS = {
         {"name": "WiFi Toggle",       "desc": "Toggle wlan0 on/off",             "cmd": "sudo cardputer-wifi-toggle",        "need_root": True},
     ],
     "SYS": [
+        {"name": "Trail Navigation",    "desc": "Breadcrumb nav + exit guidance",  "cmd": "trail-tui",                        "need_root": False},
+        {"name": "WiFi Dashboard",       "desc": "Scan/wardrive/attacks TUI",       "cmd": "wifi-tui",                         "need_root": True},
+        {"name": "Bluetooth Dashboard",  "desc": "BT/BLE scan + GATT + attacks",   "cmd": "bt-tui",                           "need_root": True},
         {"name": "System Monitor",   "desc": "CPU/RAM/batt/temp/processes live", "cmd": "sys-tui",                         "need_root": False},
         {"name": "Net Dashboard",     "desc": "Live host/port table from scans",  "cmd": "net-tui",                         "need_root": False},
         {"name": "Loot Browser",      "desc": "Browse loot with file preview",    "cmd": "loot-tui",                        "need_root": False},
