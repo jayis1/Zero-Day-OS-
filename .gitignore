@@ -50,6 +50,7 @@ kernel/source/            # kernel source tree if downloaded
 handshakes/
 pmkid/
 loot/
+!loot/wordlists/
 captures/
 pcaps/
 wardrives/

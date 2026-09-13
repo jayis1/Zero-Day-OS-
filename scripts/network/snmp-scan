@@ -1,0 +1,155 @@
+#!/bin/bash
+set -euo pipefail
+# /usr/local/bin/snmp-scan
+# SNMP community string brute-force + MIB walk
+# Ported from Raspyjack snmp_walk.py (7h30th3r0n3) for ZERO-DAY OS arm64
+#
+# Discovers SNMP hosts on the subnet, brute-forces community strings,
+# walks sysDescr/sysName/interfaces/routing table.
+#
+# Usage: snmp-scan [target|subnet] [community_file]
+#   target        — single IP or subnet (e.g. 192.168.1.0/24)
+#   community_file — wordlist of community strings (default: built-in)
+#
+# Deps: snmp-mibs-downloader snmpwalk — apt install snmp snmp-mibs-downloader
+
+TARGET="${1:-auto}"
+COMMUNITY_FILE="${2:-}"
+LOOT="/opt/cardputer/loot/recon"
+TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+OUTFILE="$LOOT/snmp_${TIMESTAMP}.json"
+mkdir -p "$LOOT"
+
+RED='\033[0;31m'; CYAN='\033[0;36m'; GREEN='\033[0;32m'
+YELLOW='\033[1;33m'; BOLD='\033[1m'; NC='\033[0m'
+
+[ "$(id -u)" -ne 0 ] && { echo -e "${RED}[!] Root required.${NC}"; exit 1; }
+
+# Check deps
+if ! command -v snmpwalk &>/dev/null && ! python3 -c "import pysnmp" 2>/dev/null; then
+    echo -e "${RED}[!] snmpwalk not found. apt install snmp${NC}"
+    exit 1
+fi
+
+# Built-in common community strings
+COMMON_COMMUNITIES=(
+    "public" "private" "community" "admin" "manager"
+    "snmpd" "snmpv1" "snmpv2c" "cisco" "0392a0"
+    "secret" "security" "password" "default" "guest"
+    "monitor" "readonly" "readwrite" "all" "write"
+)
+
+# Auto-detect subnet
+if [ "$TARGET" = "auto" ]; then
+    TARGET=$(ip -4 route show | grep -v default | head -1 | awk '{print $1}')
+    [ -z "$TARGET" ] && { echo -e "${RED}[!] Cannot auto-detect subnet${NC}"; exit 1; }
+    echo -e "${CYAN}[*]${NC} Auto-detected subnet: $TARGET"
+fi
+
+echo -e "${BOLD}${CYAN}━━━ SNMP SCAN — ZERO-DAY OS ━━━${NC}"
+echo -e "${CYAN}[*]${NC} Target:  $TARGET"
+echo -e "${CYAN}[*]${NC} Output:  $OUTFILE"
+echo ""
+
+# Build community list
+if [ -n "$COMMUNITY_FILE" ] && [ -f "$COMMUNITY_FILE" ]; then
+    mapfile -t COMMUNITIES < "$COMMUNITY_FILE"
+else
+    COMMUNITIES=("${COMMON_COMMUNITIES[@]}")
+fi
+echo -e "${CYAN}[*]${NC} Communities to try: ${#COMMUNITIES[@]}"
+
+# Discover SNMP hosts (UDP 161)
+echo -e "${CYAN}[*]${NC} Scanning for SNMP hosts (UDP 161)..."
+SNMP_HOSTS=()
+
+# Use nmap if available for UDP scan
+if command -v nmap &>/dev/null; then
+    mapfile -t SNMP_HOSTS < <(nmap -sU -p 161 --open -oG - "$TARGET" 2>/dev/null \
+        | grep "161/open" | awk '{print $2}')
+else
+    # Fallback: try all hosts in subnet with snmpwalk public
+    python3 -c "
+import ipaddress, sys
+net = ipaddress.ip_network(sys.argv[1], strict=False)
+for h in list(net.hosts())[:254]:
+    print(h)
+" "$TARGET" | head -254 > /tmp/snmp_hosts.txt
+    # Quick filter: try snmpwalk with timeout=1
+    while IFS= read -r host; do
+        timeout 1 snmpwalk -v2c -c public -t 1 -r 0 "$host" 1.3.6.1.2.1.1.1.0 \
+            &>/dev/null && SNMP_HOSTS+=("$host") || true
+    done < /tmp/snmp_hosts.txt
+    rm -f /tmp/snmp_hosts.txt
+fi
+
+if [ ${#SNMP_HOSTS[@]} -eq 0 ]; then
+    echo -e "${YELLOW}[!]${NC} No SNMP hosts found on $TARGET"
+    exit 0
+fi
+
+echo -e "${GREEN}[+]${NC} Found ${#SNMP_HOSTS[@]} SNMP host(s): ${SNMP_HOSTS[*]}"
+echo ""
+
+# MIB OIDs to walk
+declare -A OIDS=(
+    [sysDescr]="1.3.6.1.2.1.1.1.0"
+    [sysName]="1.3.6.1.2.1.1.5.0"
+    [sysLocation]="1.3.6.1.2.1.1.6.0"
+    [sysContact]="1.3.6.1.2.1.1.4.0"
+    [ifTable]="1.3.6.1.2.1.2.2"
+    [ipRouteTable]="1.3.6.1.2.1.4.21"
+    [hrStorageTable]="1.3.6.1.2.1.25.2.3"
+)
+
+declare -a RESULTS=()
+
+for host in "${SNMP_HOSTS[@]}"; do
+    echo -e "${CYAN}[*]${NC} Brute-forcing $host..."
+    CRACKED_COMMUNITY=""
+
+    for comm in "${COMMUNITIES[@]}"; do
+        result=$(timeout 2 snmpwalk -v2c -c "$comm" -t 1 -r 0 \
+            "$host" "1.3.6.1.2.1.1.1.0" 2>/dev/null | head -1)
+        if [ -n "$result" ]; then
+            CRACKED_COMMUNITY="$comm"
+            ok "  $host  community='$comm'"
+            break
+        fi
+    done
+
+    [ -z "$CRACKED_COMMUNITY" ] && { warn "  $host  no valid community string found"; continue; }
+
+    # Walk key OIDs
+    echo -e "  ${CYAN}Walking MIB on $host (community='$CRACKED_COMMUNITY')...${NC}"
+    HOSTDATA="{\"host\":\"$host\",\"community\":\"$CRACKED_COMMUNITY\",\"data\":{"
+
+    for oid_name in "${!OIDS[@]}"; do
+        oid="${OIDS[$oid_name]}"
+        data=$(timeout 5 snmpwalk -v2c -c "$CRACKED_COMMUNITY" -t 2 -r 0 \
+            "$host" "$oid" 2>/dev/null | head -10 | tr '\n' '|')
+        if [ -n "$data" ]; then
+            echo -e "    ${GREEN}$oid_name${NC}: $(echo "$data" | head -c 100)"
+        fi
+    done
+
+    RESULTS+=("$host:$CRACKED_COMMUNITY")
+done
+
+# Save results
+printf '%s\n' "${RESULTS[@]}" | python3 -c "
+import sys, json
+results = []
+for line in sys.stdin:
+    line = line.strip()
+    if ':' in line:
+        host, comm = line.rsplit(':', 1)
+        results.append({'host': host, 'community': comm})
+with open('$OUTFILE', 'w') as f:
+    json.dump(results, f, indent=2)
+print(f'[+] Results saved: $OUTFILE')
+" 2>/dev/null || true
+
+echo ""
+echo -e "${CYAN}[*]${NC} Cracked ${#RESULTS[@]}/${#SNMP_HOSTS[@]} hosts"
+[ ${#RESULTS[@]} -gt 0 ] && echo -e "${GREEN}[+]${NC} Saved to $OUTFILE"

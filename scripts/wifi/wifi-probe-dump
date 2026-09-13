@@ -1,0 +1,139 @@
+#!/bin/bash
+set -euo pipefail
+# /usr/local/bin/wifi-probe-dump
+# Passive 802.11 probe request dump — who is searching for what SSIDs
+# Ported from Raspyjack wifi_probe_dump.py (7h30th3r0n3) for ZERO-DAY OS arm64
+#
+# Sniffs probe requests from nearby devices. Builds a live MAC→SSID map.
+# Use the top-probed SSID with wifi-karma-ap for targeted attacks.
+#
+# Usage: wifi-probe-dump [iface] [duration_seconds]
+#   iface    — monitor-capable interface (default: wlan1)
+#   duration — 0 = until Ctrl+C (default: 60)
+#
+# Deps: tshark (preferred) or tcpdump — apt install tshark
+
+IFACE="${1:-wlan1}"
+DURATION="${2:-60}"
+LOOT="/opt/cardputer/loot/wifi"
+TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+OUTJSON="${LOOT}/probes_${TIMESTAMP}.json"
+mkdir -p "$LOOT"
+
+RED='\033[0;31m'; CYAN='\033[0;36m'; GREEN='\033[0;32m'
+YELLOW='\033[1;33m'; BOLD='\033[1m'; NC='\033[0m'
+
+[ "$(id -u)" -ne 0 ] && { echo -e "${RED}[!] Root required.${NC}"; exit 1; }
+ip link show "$IFACE" &>/dev/null \
+    || { echo -e "${RED}[!] $IFACE not found. Connect RTL8821CU dongle.${NC}"; exit 1; }
+
+if ! command -v tshark &>/dev/null && ! command -v tcpdump &>/dev/null; then
+    echo -e "${RED}[!] Need tshark or tcpdump: apt install tshark${NC}"; exit 1
+fi
+
+echo -e "${BOLD}${CYAN}━━━ WIFI PROBE DUMP — ZERO-DAY OS ━━━${NC}"
+echo -e "${CYAN}[*]${NC} Interface: $IFACE  Duration: ${DURATION}s (0=∞)"
+echo -e "${CYAN}[*]${NC} Output:    $OUTJSON"
+echo ""
+
+# Monitor mode
+ip link set "$IFACE" down 2>/dev/null
+iw dev "$IFACE" set type monitor 2>/dev/null \
+    || { echo -e "${RED}[!] Cannot set monitor mode on $IFACE${NC}"; exit 1; }
+ip link set "$IFACE" up 2>/dev/null
+
+restore() {
+    echo "" >&2
+    ip link set "$IFACE" down 2>/dev/null || true
+    iw dev "$IFACE" set type managed 2>/dev/null || true
+    ip link set "$IFACE" up 2>/dev/null || true
+    # Save JSON summary
+    python3 -c "
+import json, collections, sys
+data = collections.defaultdict(set)
+try:
+    for line in open('/tmp/zd_probes_$TIMESTAMP.log'):
+        parts = line.strip().split('|')
+        if len(parts) == 2:
+            mac, ssid = parts
+            if ssid and ssid != '<broadcast>':
+                data[mac].add(ssid)
+    out = {m: sorted(s) for m, s in data.items()}
+    json.dump(out, open('$OUTJSON','w'), indent=2)
+    counts = collections.Counter(s for ssids in data.values() for s in ssids)
+    print(f'[+] {len(out)} devices → $OUTJSON')
+    print('[*] Top SSIDs probed:')
+    for ssid, n in counts.most_common(10):
+        print(f'  {n:3d}x  {ssid}')
+except Exception as e:
+    print(f'[!] {e}')
+" 2>/dev/null || true
+    rm -f "/tmp/zd_probes_$TIMESTAMP.log"
+}
+trap restore EXIT
+
+# Channel hopping (1-13, 2.4GHz)
+(while true; do
+    for ch in 1 6 11 2 7 12 3 8 13 4 9 5 10; do
+        iw dev "$IFACE" set channel "$ch" 2>/dev/null || true
+        sleep 0.4
+    done
+done) &
+HOP=$!
+trap 'kill $HOP 2>/dev/null; restore' EXIT
+
+> "/tmp/zd_probes_$TIMESTAMP.log"
+
+echo -e "  ${CYAN}MAC Address         SSID probed${NC}"
+echo "  ──────────────────────────────────────────────"
+
+if command -v tshark &>/dev/null; then
+    TSHARK_ARGS=(-i "$IFACE" -Y 'wlan.fc.type_subtype==4'
+                 -T fields -e wlan.sa -e wlan_mgt.ssid
+                 -l --disable-protocol gvcp)
+    [ "$DURATION" -gt 0 ] && TSHARK_ARGS+=(-a "duration:$DURATION")
+
+    tshark "${TSHARK_ARGS[@]}" 2>/dev/null \
+    | python3 -u -c "
+import sys, collections
+seen = set(); counts = collections.Counter()
+for line in sys.stdin:
+    parts = line.rstrip('\n').split('\t')
+    if len(parts) < 2: continue
+    mac, ssid = parts[0].strip(), parts[1].strip()
+    if not mac: continue
+    ssid = ssid or '<broadcast>'
+    key = mac + ssid
+    if key not in seen:
+        seen.add(key)
+        counts[ssid] += 1
+        colour = '\033[0;32m' if ssid != '<broadcast>' else '\033[2m'
+        print(f'  \033[0;36m{mac}\033[0m  {colour}{ssid}\033[0m')
+        sys.stdout.flush()
+    with open('/tmp/zd_probes_$TIMESTAMP.log', 'a') as f:
+        f.write(f'{mac}|{ssid}\n')
+" 2>/dev/null
+else
+    # tcpdump fallback
+    PCAP="${LOOT}/probes_${TIMESTAMP}.pcap"
+    CMD="tcpdump -i $IFACE -w $PCAP type mgt subtype probe-req"
+    if [ "$DURATION" -gt 0 ]; then
+        timeout "$DURATION" $CMD 2>/dev/null || true
+    else
+        $CMD 2>/dev/null || true
+    fi
+    echo -e "${CYAN}[*]${NC} Parsing pcap..."
+    tcpdump -r "$PCAP" -e 2>/dev/null \
+    | python3 -u -c "
+import sys, re
+for line in sys.stdin:
+    sa = re.search(r'SA:([0-9a-f:]{17})', line)
+    ssid = re.search(r'Probe Request \(([^)]*)\)', line)
+    if sa and ssid:
+        mac, s = sa.group(1), ssid.group(1)
+        print(f'  \033[0;36m{mac}\033[0m  \033[0;32m{s}\033[0m')
+        sys.stdout.flush()
+        with open('/tmp/zd_probes_$TIMESTAMP.log','a') as f:
+            f.write(f'{mac}|{s}\n')
+" 2>/dev/null
+fi

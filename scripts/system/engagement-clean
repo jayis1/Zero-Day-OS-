@@ -1,0 +1,224 @@
+#!/bin/bash
+set -euo pipefail
+# /usr/local/bin/engagement-clean
+# Selective post-engagement forensic artifact cleaner
+# Ported from Raspyjack log_cleaner.py (7h30th3r0n3) for ZERO-DAY OS arm64
+#
+# Wipes: shell history, auth logs, syslog references, temp files,
+# SSH known_hosts, lastlog/wtmp/btmp, bash timestamps.
+# PROTECTS: /opt/cardputer/loot/ (your captured data stays safe)
+#
+# Usage: engagement-clean [quick|full|select|status]
+
+MODE="${1:-status}"
+
+RED='\033[0;31m'; CYAN='\033[0;36m'; GREEN='\033[0;32m'
+YELLOW='\033[1;33m'; BOLD='\033[1m'; DIM='\033[2m'; NC='\033[0m'
+
+[ "$(id -u)" -ne 0 ] && { echo -e "${RED}[!] Root required.${NC}"; exit 1; }
+
+ok()   { echo -e "${GREEN}[+]${NC} $*"; }
+info() { echo -e "${CYAN}[*]${NC} $*"; }
+warn() { echo -e "${YELLOW}[!]${NC} $*"; }
+done_item() { echo -e "  ${GREEN}✓${NC} $*"; }
+skip_item() { echo -e "  ${DIM}–${NC} $* (not found)"; }
+
+# Items to clean — (label, action_function)
+clean_bash_history() {
+    for f in /root/.bash_history /home/*/.bash_history; do
+        [ -f "$f" ] && { > "$f"; done_item "Wiped: $f"; } || skip_item "$f"
+    done
+    history -c 2>/dev/null || true
+    unset HISTFILE 2>/dev/null || true
+}
+
+clean_zsh_history() {
+    for f in /root/.zsh_history /home/*/.zsh_history; do
+        [ -f "$f" ] && { > "$f"; done_item "Wiped: $f"; } || skip_item "$f"
+    done
+}
+
+clean_auth_log() {
+    for f in /var/log/auth.log /var/log/secure /var/log/auth.log.1; do
+        [ -f "$f" ] && { > "$f"; done_item "Wiped: $f"; } || skip_item "$f"
+    done
+}
+
+clean_syslog() {
+    for f in /var/log/syslog /var/log/messages /var/log/kern.log /var/log/daemon.log; do
+        [ -f "$f" ] && { > "$f"; done_item "Wiped: $f"; } || skip_item "$f"
+    done
+}
+
+clean_lastlog() {
+    for f in /var/log/lastlog /var/log/wtmp /var/log/btmp /var/log/faillog; do
+        [ -f "$f" ] && { > "$f"; done_item "Wiped: $f"; } || skip_item "$f"
+    done
+    command -v lastlog &>/dev/null && done_item "lastlog cleared" || true
+}
+
+clean_ssh_known_hosts() {
+    for f in /root/.ssh/known_hosts /home/*/.ssh/known_hosts; do
+        [ -f "$f" ] && { > "$f"; done_item "Wiped: $f"; } || skip_item "$f"
+    done
+}
+
+clean_tmp() {
+    local count=0
+    for f in /tmp/zd-* /tmp/scapy* /tmp/spray_* /tmp/snmp_* /tmp/karma* \
+              /tmp/reaver* /tmp/nmap* /tmp/*.pcap /tmp/*.cap; do
+        [ -f "$f" ] && { rm -f "$f"; count=$(( count+1 )); }
+        [ -d "$f" ] && { rm -rf "$f"; count=$(( count+1 )); }
+    done
+    done_item "Removed $count temp file(s) from /tmp"
+}
+
+clean_bash_timestamps() {
+    # HISTTIMEFORMAT traces — wipe timestamps from history
+    for f in /root/.bash_history /home/*/.bash_history; do
+        [ -f "$f" ] || continue
+        sed -i '/^#[0-9]\{10\}/d' "$f" 2>/dev/null && done_item "Removed timestamps: $f"
+    done
+}
+
+clean_nmap_logs() {
+    for f in /opt/cardputer/loot/recon/*.xml /opt/cardputer/loot/recon/*.nmap \
+              /opt/cardputer/loot/recon/*.gnmap; do
+        [ -f "$f" ] && { rm -f "$f"; done_item "Removed nmap log: $(basename "$f")"; } || true
+    done
+}
+
+clean_wifi_logs() {
+    for f in /opt/cardputer/loot/wifi/*.log /opt/cardputer/loot/wifi/survey_*; do
+        [ -f "$f" ] && { rm -f "$f"; done_item "Removed wifi log: $(basename "$f")"; } || true
+    done
+}
+
+clean_journald() {
+    if command -v journalctl &>/dev/null; then
+        journalctl --rotate --vacuum-time=1s 2>/dev/null && done_item "Rotated/vacuumed journald" || true
+    fi
+}
+
+show_status() {
+    echo -e "${BOLD}${CYAN}━━━ ENGAGEMENT CLEAN — STATUS ━━━${NC}"
+    echo ""
+
+    check_size() {
+        local label="$1"; shift
+        local size=0
+        for f in "$@"; do
+            [ -f "$f" ] && size=$(( size + $(stat -c%s "$f" 2>/dev/null || echo 0) ))
+        done
+        local human=$(( size / 1024 ))
+        [ "$size" -gt 0 ] && echo -e "  ${YELLOW}!${NC} $label: ${human}KB" \
+                           || echo -e "  ${GREEN}✓${NC} $label: clean"
+    }
+
+    check_size "bash history"  /root/.bash_history /home/*/.bash_history 2>/dev/null
+    check_size "auth.log"      /var/log/auth.log /var/log/secure
+    check_size "syslog"        /var/log/syslog /var/log/messages
+    check_size "wtmp/btmp"     /var/log/wtmp /var/log/btmp
+    check_size "ssh known_hosts" /root/.ssh/known_hosts /home/*/.ssh/known_hosts 2>/dev/null
+    check_size "nmap logs"     /opt/cardputer/loot/recon/*.xml 2>/dev/null
+    check_size "wifi survey"   /opt/cardputer/loot/wifi/*.log 2>/dev/null
+
+    echo ""
+    local tmp_count
+    tmp_count=$(ls /tmp/zd-* /tmp/scapy* /tmp/spray_* /tmp/snmp_* 2>/dev/null | wc -l)
+    echo -e "  ${tmp_count:+${YELLOW}!${NC} }${tmp_count:-${GREEN}✓${NC} }Temp files in /tmp: $tmp_count"
+    echo ""
+    info "PROTECTED (never touched): /opt/cardputer/loot/"
+    echo -e "${DIM}  (your captured data is always safe)${NC}"
+}
+
+echo -e "${BOLD}${CYAN}━━━ ENGAGEMENT CLEAN — ZERO-DAY OS ━━━${NC}"
+echo ""
+
+case "$MODE" in
+status|--status)
+    show_status
+    echo ""
+    info "Run: engagement-clean quick  (shell history, tmp, auth logs)"
+    info "     engagement-clean full   (everything above + syslog, wtmp, journald)"
+    info "     engagement-clean select (choose items interactively)"
+    ;;
+
+quick|--quick|-q)
+    echo -e "${CYAN}[*]${NC} Quick clean: shell history, temp files, SSH known_hosts"
+    echo ""
+    clean_bash_history
+    clean_zsh_history
+    clean_ssh_known_hosts
+    clean_tmp
+    clean_bash_timestamps
+    echo ""
+    ok "Quick clean complete. Loot directory untouched."
+    ;;
+
+full|--full|-f)
+    warn "Full clean: wiping shell history, logs, wtmp, syslog, journald, tmp"
+    warn "LOOT DIRECTORY IS PROTECTED."
+    echo ""
+    echo -n "Confirm full clean? [y/N]: "
+    read -r c; [ "${c,,}" = "y" ] || { info "Aborted."; exit 0; }
+    echo ""
+    info "Shell history..."
+    clean_bash_history; clean_zsh_history; clean_bash_timestamps
+    info "Auth / system logs..."
+    clean_auth_log; clean_syslog
+    info "Login records..."
+    clean_lastlog
+    info "SSH..."
+    clean_ssh_known_hosts
+    info "Temp files..."
+    clean_tmp
+    info "Journald..."
+    clean_journald
+    echo ""
+    ok "Full clean complete. /opt/cardputer/loot/ UNTOUCHED."
+    ;;
+
+select|--select|-s)
+    declare -A ITEMS=(
+        [1]="bash/zsh history"
+        [2]="SSH known_hosts"
+        [3]="auth.log / secure"
+        [4]="syslog / messages"
+        [5]="wtmp / btmp / lastlog"
+        [6]="/tmp temp files"
+        [7]="nmap scan logs"
+        [8]="wifi survey logs"
+        [9]="journald vacuum"
+    )
+    echo "Select items to clean (space-separated numbers, e.g. '1 2 6'):"
+    for k in "${!ITEMS[@]}"; do
+        echo "  [$k] ${ITEMS[$k]}"
+    done | sort
+    echo ""
+    echo -n "> "
+    read -r sel
+    echo ""
+    for n in $sel; do
+        case "$n" in
+            1) info "Cleaning shell history...";  clean_bash_history; clean_zsh_history ;;
+            2) info "Cleaning SSH known_hosts..."; clean_ssh_known_hosts ;;
+            3) info "Cleaning auth.log...";        clean_auth_log ;;
+            4) info "Cleaning syslog...";          clean_syslog ;;
+            5) info "Cleaning login records...";   clean_lastlog ;;
+            6) info "Cleaning /tmp...";            clean_tmp ;;
+            7) info "Cleaning nmap logs...";       clean_nmap_logs ;;
+            8) info "Cleaning wifi logs...";       clean_wifi_logs ;;
+            9) info "Vacuuming journald...";       clean_journald ;;
+            *) warn "Unknown item: $n" ;;
+        esac
+    done
+    echo ""
+    ok "Selected clean complete."
+    ;;
+
+*)
+    echo "Usage: engagement-clean [status|quick|full|select]"
+    exit 1
+    ;;
+esac
