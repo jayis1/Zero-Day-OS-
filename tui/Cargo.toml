@@ -1,0 +1,42 @@
+[package]
+name = "zeroday-tui"
+version = "1.0.0"
+edition = "2021"
+description = "Ratatui hacker dashboards for ZERO-DAY OS — sys-monitor, net-dash, loot-browser, scan-tui"
+authors = ["ZERO-DAY OS"]
+
+[[bin]]
+name = "sys-tui"
+path = "src/sys_tui.rs"
+
+[[bin]]
+name = "net-tui"
+path = "src/net_tui.rs"
+
+[[bin]]
+name = "loot-tui"
+path = "src/loot_tui.rs"
+
+[[bin]]
+name = "scan-tui"
+path = "src/scan_tui.rs"
+
+[dependencies]
+ratatui      = { version = "0.30", features = ["crossterm"] }
+crossterm    = "0.28"
+clap         = { version = "4", features = ["derive"] }
+serde        = { version = "1", features = ["derive"] }
+serde_json   = "1"
+chrono       = "0.4"
+log          = "0.4"
+env_logger   = "0.11"
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"
+
+[profile.dev]
+opt-level = 1
