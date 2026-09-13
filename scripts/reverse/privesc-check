@@ -1,0 +1,357 @@
+#!/bin/bash
+set -euo pipefail
+# /usr/local/bin/privesc-check
+# Local privilege escalation checker for post-exploitation
+# Checks: SUID/SGID, sudo misconfigs, writable paths in $PATH, cron jobs,
+# world-writable files, capabilities, weak passwords, kernel exploits,
+# docker/lxc escape vectors, NFS no_root_squash
+#
+# Usage: privesc-check [full|quick|suid|sudo|cron|capabilities|kernel|report]
+
+LOOT="/opt/cardputer/loot/recon"
+TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+OUTFILE="$LOOT/privesc_${TIMESTAMP}.txt"
+mkdir -p "$LOOT"
+
+RED='\033[0;31m'
+CYAN='\033[0;36m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BOLD='\033[1m'
+NC='\033[0m'
+
+FINDINGS=0
+
+header() { echo -e "\n${BOLD}${CYAN}━━━ $* ━━━${NC}" | tee -a "$OUTFILE"; }
+hit()    { echo -e "${RED}[VULN]${NC} $*" | tee -a "$OUTFILE"; FINDINGS=$(( FINDINGS + 1 )); }
+info()   { echo -e "${CYAN}[*]${NC} $*"   | tee -a "$OUTFILE"; }
+ok()     { echo -e "${GREEN}[OK]${NC} $*" | tee -a "$OUTFILE"; }
+warn()   { echo -e "${YELLOW}[?]${NC} $*" | tee -a "$OUTFILE"; }
+
+echo -e "${BOLD}${CYAN}"
+echo "  ██████╗ ██████╗ ██╗██╗   ██╗███████╗███████╗ ██████╗"
+echo "  ██╔══██╗██╔══██╗██║██║   ██║██╔════╝██╔════╝██╔════╝"
+echo "  ██████╔╝██████╔╝██║██║   ██║█████╗  ███████╗██║"
+echo "  ██╔═══╝ ██╔══██╗██║╚██╗ ██╔╝██╔══╝  ╚════██║██║"
+echo "  ██║     ██║  ██║██║ ╚████╔╝ ███████╗███████║╚██████╗"
+echo "  ╚═╝     ╚═╝  ╚═╝╚═╝  ╚═══╝  ╚══════╝╚══════╝ ╚═════╝  CHECK"
+echo -e "${NC}"
+info "Target: $(hostname)  User: $(id)  Date: $(date)"
+info "Output: $OUTFILE"
+
+check_system_info() {
+    header "SYSTEM INFO"
+    info "OS:      $(cat /etc/os-release 2>/dev/null | grep PRETTY_NAME | cut -d= -f2 | tr -d '"')"
+    info "Kernel:  $(uname -r)"
+    info "Arch:    $(uname -m)"
+    info "User:    $(id)"
+    info "Groups:  $(groups)"
+    info "Sudo:    $(sudo -V 2>/dev/null | head -1 || echo 'not installed')"
+
+    # Check if in docker/container
+    if [ -f /.dockerenv ] || grep -q docker /proc/1/cgroup 2>/dev/null; then
+        hit "Running inside Docker container — check for escape vectors"
+    fi
+    if grep -q lxc /proc/1/cgroup 2>/dev/null; then
+        hit "Running inside LXC container"
+    fi
+}
+
+check_sudo() {
+    header "SUDO MISCONFIGS"
+    if ! command -v sudo &>/dev/null; then ok "sudo not installed"; return; fi
+
+    # sudo -l without password
+    local sudol
+    sudol=$(sudo -n -l 2>/dev/null || echo "NOPASSWD_FAIL")
+    if echo "$sudol" | grep -q "NOPASSWD_FAIL"; then
+        ok "sudo requires password"
+        return
+    fi
+
+    echo "$sudol" | tee -a "$OUTFILE"
+
+    # Flag dangerous sudo entries
+    echo "$sudol" | grep -iE "ALL|NOPASSWD" | while IFS= read -r line; do
+        hit "sudo: $line"
+    done
+
+    # GTFOBins quick check
+    local gtfo_bins="vi vim nano less more man find awk perl python python3 ruby bash sh nmap socat nc netcat curl wget git docker tee cp mv chmod chown scp rsync zip tar env nohup strace"
+    for bin in $gtfo_bins; do
+        if echo "$sudol" | grep -q "$bin"; then
+            hit "sudo GTFOBin: $bin  (check: https://gtfobins.github.io/gtfobins/$bin/#sudo)"
+        fi
+    done
+}
+
+check_suid() {
+    header "SUID/SGID BINARIES"
+    local suid_list
+    suid_list=$(find / -perm /4000 -type f 2>/dev/null | grep -v "^/proc" | grep -v "^/sys" | sort)
+
+    # Expected SUID (non-suspicious)
+    local expected="ping su sudo passwd mount umount newgrp chsh chfn gpasswd pkexec"
+    local unexpected=0
+
+    while IFS= read -r bin; do
+        local name
+        name=$(basename "$bin")
+        if ! echo "$expected" | grep -qw "$name"; then
+            hit "SUID: $bin  ($(ls -la "$bin" 2>/dev/null | awk '{print $1,$3,$4}'))"
+            unexpected=$(( unexpected + 1 ))
+        fi
+    done <<< "$suid_list"
+
+    [ "$unexpected" -eq 0 ] && ok "No unexpected SUID binaries"
+
+    # SGID
+    find / -perm /2000 -type f 2>/dev/null | grep -v "^/proc\|^/sys" | while IFS= read -r bin; do
+        local name
+        name=$(basename "$bin")
+        if ! echo "wall write crontab ssh-agent" | grep -qw "$name"; then
+            warn "SGID: $bin"
+        fi
+    done
+}
+
+check_capabilities() {
+    header "FILE CAPABILITIES"
+    if ! command -v getcap &>/dev/null; then warn "getcap not found (apt install libcap2-bin)"; return; fi
+
+    local caps
+    caps=$(getcap -r / 2>/dev/null | grep -v "^/proc\|^/sys")
+    if [ -z "$caps" ]; then
+        ok "No elevated capabilities found"
+        return
+    fi
+
+    echo "$caps" | while IFS= read -r line; do
+        local bin
+        bin=$(echo "$line" | awk '{print $1}')
+        local cap
+        cap=$(echo "$line" | awk '{print $2}')
+        case "$cap" in
+            *cap_setuid*|*cap_setgid*)
+                hit "CAP_SETUID/SETGID: $line  → privesc possible" ;;
+            *cap_net_raw*)
+                warn "CAP_NET_RAW: $line  → packet sniffing" ;;
+            *cap_sys_ptrace*)
+                hit "CAP_SYS_PTRACE: $line  → process injection" ;;
+            *cap_sys_admin*)
+                hit "CAP_SYS_ADMIN: $line  → broad privesc vector" ;;
+            *)
+                warn "CAP: $line" ;;
+        esac
+    done
+}
+
+check_cron() {
+    header "CRON JOBS"
+    # System crontabs
+    for f in /etc/crontab /etc/cron.d/* /var/spool/cron/crontabs/*; do
+        [ -f "$f" ] || continue
+        # Check if script in cron is writable by current user
+        while IFS= read -r line; do
+            [[ "$line" =~ ^# ]] && continue
+            [[ -z "$line" ]] && continue
+            local script
+            script=$(echo "$line" | awk '{print $NF}')
+            if [ -f "$script" ] && [ -w "$script" ]; then
+                hit "WRITABLE cron script: $script (from $f)"
+            fi
+            # Check if parent dir is writable
+            local dir
+            dir=$(dirname "$script")
+            if [ -d "$dir" ] && [ -w "$dir" ]; then
+                hit "WRITABLE cron script dir: $dir (from $f)"
+            fi
+        done < "$f"
+        warn "Cron file: $f"
+    done
+
+    # Check if crontab command is available
+    crontab -l 2>/dev/null | grep -v "^#" | grep "." | while IFS= read -r line; do
+        info "User cron: $line"
+    done
+}
+
+check_writable_path() {
+    header "WRITABLE \$PATH DIRECTORIES"
+    IFS=: read -ra path_dirs <<< "$PATH"
+    for dir in "${path_dirs[@]}"; do
+        [ -d "$dir" ] || continue
+        if [ -w "$dir" ]; then
+            hit "Writable PATH dir: $dir  → PATH hijacking possible"
+        fi
+    done
+}
+
+check_world_writable() {
+    header "WORLD-WRITABLE SENSITIVE FILES"
+    # /etc files that shouldn't be world-writable
+    find /etc -maxdepth 2 -writable -type f 2>/dev/null | while IFS= read -r f; do
+        hit "World-writable /etc file: $f"
+    done
+
+    # /usr/local/bin writable?
+    [ -w /usr/local/bin ] && hit "World-writable: /usr/local/bin"
+    [ -w /usr/bin ] && hit "World-writable: /usr/bin"
+}
+
+check_passwd_shadow() {
+    header "CREDENTIALS"
+    # Readable /etc/shadow?
+    if [ -r /etc/shadow ]; then
+        hit "/etc/shadow is READABLE — dumping hashes:"
+        grep -v "^$\|^#\|\*\|!!" /etc/shadow | tee -a "$OUTFILE"
+    fi
+
+    # Passwords in /etc/passwd (old-style)?
+    if grep -v "^root\|^nobody\|^daemon\|^bin\|^sys" /etc/passwd 2>/dev/null | grep -vE "^.*:x:" | grep -q "."; then
+        hit "/etc/passwd contains password hashes (not x):"
+        grep -v "^.*:x:" /etc/passwd | tee -a "$OUTFILE"
+    fi
+
+    # SSH keys in home dirs
+    find /home /root -name "id_rsa" -o -name "id_ed25519" 2>/dev/null | while IFS= read -r key; do
+        if [ -r "$key" ]; then
+            hit "Readable SSH private key: $key"
+        fi
+    done
+
+    # .bash_history with passwords
+    for hist in /root/.bash_history /home/*/.bash_history; do
+        [ -r "$hist" ] || continue
+        if grep -iqE "password|passwd|pass|secret|key|token|api" "$hist" 2>/dev/null; then
+            warn "Possible credentials in $hist"
+        fi
+    done
+
+    # Config files with credentials
+    find / -maxdepth 5 -name "*.conf" -o -name "*.config" -o -name ".env" -o -name "wp-config.php" 2>/dev/null | \
+        xargs grep -liE "password|passwd|DB_PASS|API_KEY|SECRET" 2>/dev/null | head -10 | while IFS= read -r f; do
+        warn "Possible creds in: $f"
+    done
+}
+
+check_nfs() {
+    header "NFS no_root_squash"
+    if [ -f /etc/exports ]; then
+        if grep -q "no_root_squash" /etc/exports; then
+            hit "NFS no_root_squash in /etc/exports:"
+            grep "no_root_squash" /etc/exports | tee -a "$OUTFILE"
+        fi
+    fi
+    # Active NFS mounts
+    mount | grep nfs | while IFS= read -r line; do
+        info "NFS mount: $line"
+    done
+}
+
+check_kernel() {
+    header "KERNEL VERSION (exploit check)"
+    local kver
+    kver=$(uname -r)
+    info "Kernel: $kver"
+
+    # Known vuln kernel ranges (rough check)
+    local major minor
+    major=$(echo "$kver" | cut -d. -f1)
+    minor=$(echo "$kver" | cut -d. -f2)
+
+    if [ "$major" -eq 5 ] && [ "$minor" -lt 13 ]; then
+        warn "Kernel < 5.13 — check for CVE-2021-4034 (pkexec LPE)"
+    fi
+    if [ "$major" -lt 5 ] || { [ "$major" -eq 4 ] && [ "$minor" -lt 14 ]; }; then
+        warn "Old kernel — check https://github.com/mzet-/linux-exploit-suggester"
+    fi
+
+    # Check for exploit suggester
+    if command -v linux-exploit-suggester &>/dev/null; then
+        info "Running linux-exploit-suggester..."
+        linux-exploit-suggester 2>/dev/null | grep -E "^\[.\]" | head -10 | tee -a "$OUTFILE"
+    else
+        info "Tip: run linux-exploit-suggester for automated kernel exploit suggestions"
+    fi
+}
+
+check_docker() {
+    header "DOCKER / CONTAINER ESCAPE"
+    # In docker group?
+    if id | grep -q docker; then
+        hit "User is in docker group → root via: docker run -v /:/mnt alpine chroot /mnt sh"
+    fi
+    # Docker socket writable?
+    if [ -w /var/run/docker.sock ]; then
+        hit "Docker socket writable: /var/run/docker.sock → instant root"
+    fi
+    # lxd group?
+    if id | grep -q lxd; then
+        hit "User in lxd group → LXD container mount escape"
+    fi
+}
+
+check_processes() {
+    header "INTERESTING PROCESSES"
+    # Processes running as root with writable binaries
+    ps aux 2>/dev/null | grep "^root" | grep -v "\[" | while IFS= read -r line; do
+        local bin
+        bin=$(echo "$line" | awk '{print $11}' | sed 's/^-//')
+        [ -f "$bin" ] || continue
+        if [ -w "$bin" ]; then
+            hit "Root process with writable binary: $bin"
+        fi
+    done
+}
+
+report_summary() {
+    echo ""
+    echo -e "${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    if [ "$FINDINGS" -gt 0 ]; then
+        echo -e "${RED}${BOLD}  $FINDINGS POTENTIAL PRIVESC VECTOR(S) FOUND${NC}"
+    else
+        echo -e "${GREEN}  No obvious privesc vectors found${NC}"
+    fi
+    echo -e "  Full report: $OUTFILE"
+    echo -e "${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+}
+
+MODE="${1:-full}"
+case "$MODE" in
+    full)
+        check_system_info
+        check_sudo
+        check_suid
+        check_capabilities
+        check_cron
+        check_writable_path
+        check_world_writable
+        check_passwd_shadow
+        check_nfs
+        check_kernel
+        check_docker
+        check_processes
+        report_summary
+        ;;
+    quick)
+        check_sudo
+        check_suid
+        check_capabilities
+        check_passwd_shadow
+        report_summary
+        ;;
+    suid)           check_suid; report_summary ;;
+    sudo)           check_sudo; report_summary ;;
+    cron)           check_cron; report_summary ;;
+    capabilities)   check_capabilities; report_summary ;;
+    kernel)         check_kernel; report_summary ;;
+    report)
+        cat "$LOOT"/privesc_*.txt 2>/dev/null | grep "\[VULN\]" | sort -u
+        ;;
+    *)
+        echo "Usage: privesc-check [mode]"
+        echo "Modes: full (default) | quick | suid | sudo | cron | capabilities | kernel | report"
+        exit 1
+        ;;
+esac

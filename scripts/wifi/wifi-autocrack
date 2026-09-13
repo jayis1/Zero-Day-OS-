@@ -1,0 +1,210 @@
+#!/bin/bash
+set -euo pipefail
+# /usr/local/bin/wifi-autocrack
+# Crack a WPA .cap file through 4 tiers — run it, get a result, done.
+# No daemon. No watching. You captured it, you hand it here.
+#
+# Tiers:
+#   1. 50 router default passwords (instant, no wordlist needed)
+#   2. rockyou.txt wordlist
+#   3. rockyou + hashcat rules (best64, d3ad0ne)
+#   4. 8-digit mask (?d?d?d?d?d?d?d?d  and  ?l?l?l?l?d?d?d?d)
+#
+# Usage: wifi-autocrack <cap_file>
+#        wifi-autocrack list
+
+HANDSHAKES="/opt/cardputer/handshakes"
+LOOT_CREDS="/opt/cardputer/loot/creds"
+POTFILE="$LOOT_CREDS/hashcat.pot"
+CRACKEDFILE="$LOOT_CREDS/wifi_psks.txt"
+ROCKYOU="/usr/share/wordlists/rockyou.txt"
+RULES_DIR="/usr/share/hashcat/rules"
+
+RED='\033[0;31m'
+CYAN='\033[0;36m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m'
+
+mkdir -p "$LOOT_CREDS"
+
+TOP_ROUTER_PASSES=(
+    "password" "admin" "12345678" "1234567890" "password1" "12345679"
+    "11111111" "00000000" "99999999" "88888888" "pass1234" "admin123"
+    "qwerty123" "internet" "wireless" "wifi1234" "router01" "homewifi"
+    "12341234" "abc12345" "password123" "letmein1" "welcome1" "changeme"
+    "default1" "1q2w3e4r" "abc123456" "p@ssw0rd" "passw0rd" "passwd123"
+    "network1" "security" "support1" "testing1" "private1" "access123"
+    "connect1" "wifipass" "mypassword" "home1234" "55555555" "66666666"
+    "77777777" "22222222" "33333333" "44444444" "123456789" "1234512345"
+    "0987654321" "qwertyuiop"
+)
+
+info() { echo -e "${CYAN}[*]${NC} $*"; }
+ok()   { echo -e "${GREEN}[+]${NC} $*"; }
+warn() { echo -e "${YELLOW}[!]${NC} $*"; }
+fail() { echo -e "${RED}[!]${NC} $*"; }
+
+convert_cap() {
+    local cap="$1"
+    local out="${cap%.cap}.22000"
+    [ -f "$out" ] && [ -s "$out" ] && { echo "$out"; return 0; }
+    if command -v hcxpcapngtool &>/dev/null; then
+        hcxpcapngtool -o "$out" "$cap" >/dev/null 2>&1 && [ -s "$out" ] && { echo "$out"; return 0; }
+    fi
+    # fallback: use hccapx via aircrack-ng
+    if command -v aircrack-ng &>/dev/null; then
+        echo "$cap"   # aircrack-ng can use .cap directly
+        return 0
+    fi
+    echo ""; return 1
+}
+
+save_result() {
+    local hashfile="$1"
+    command -v hashcat &>/dev/null || return
+    local result
+    result=$(hashcat -m 22000 --potfile-path "$POTFILE" --show "$hashfile" 2>/dev/null | head -5)
+    [ -z "$result" ] && return
+    while IFS= read -r line; do
+        local psk
+        psk=$(echo "$line" | awk -F: '{print $NF}')
+        local bssid
+        bssid=$(echo "$line" | cut -d: -f1-6 | tr -d '*')
+        ok "CRACKED  BSSID: $bssid  PSK: $psk"
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] BSSID:$bssid PSK:$psk FILE:$(basename "$hashfile")" >> "$CRACKEDFILE"
+    done <<< "$result"
+}
+
+crack() {
+    local cap="$1"
+    [ -f "$cap" ] || { fail "File not found: $cap"; exit 1; }
+
+    local hf
+    hf=$(convert_cap "$cap")
+    [ -z "$hf" ] && { fail "Could not convert capture file — need hcxpcapngtool or aircrack-ng"; exit 1; }
+
+    local ssid="unknown"
+    command -v tshark &>/dev/null && \
+        ssid=$(tshark -r "$cap" -Y "wlan.fc.type_subtype==8" -T fields -e wlan.ssid 2>/dev/null | head -1 | tr -d '\n') || true
+
+    echo ""
+    echo -e "${CYAN}━━━ wifi-autocrack ━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    info "File:  $(basename "$cap")"
+    info "SSID:  ${ssid:-unknown}"
+    info "Hash:  $(basename "$hf")"
+    echo ""
+
+    local hmode=22000
+    [[ "$hf" == *.hccapx ]] && hmode=2500
+
+    # ── Tier 1: Router defaults ───────────────────────────────────────────────
+    info "Tier 1/4: Router default passwords (${#TOP_ROUTER_PASSES[@]})"
+    local tmpdict
+    tmpdict=$(mktemp /tmp/zdrouter.XXXXXX)
+    printf '%s\n' "${TOP_ROUTER_PASSES[@]}" > "$tmpdict"
+
+    local cracked=0
+    if command -v hashcat &>/dev/null; then
+        hashcat -m "$hmode" -a 0 --potfile-path "$POTFILE" --quiet \
+            "$hf" "$tmpdict" 2>/dev/null && cracked=1 || true
+    elif command -v aircrack-ng &>/dev/null && [[ "$hf" == *.cap ]]; then
+        aircrack-ng -w "$tmpdict" "$hf" 2>/dev/null | grep -q "KEY FOUND" && cracked=1 || true
+    fi
+    rm -f "$tmpdict"
+
+    if [ "$cracked" -eq 1 ]; then save_result "$hf"; return; fi
+    warn "Tier 1: no match"
+
+    # ── Tier 2: Rockyou ───────────────────────────────────────────────────────
+    if [ -f "$ROCKYOU" ] && command -v hashcat &>/dev/null; then
+        info "Tier 2/4: rockyou.txt ($(wc -l < "$ROCKYOU" | tr -d ' ') words, 5min cap)"
+        hashcat -m "$hmode" -a 0 --potfile-path "$POTFILE" --quiet --runtime=300 \
+            "$hf" "$ROCKYOU" 2>/dev/null && cracked=1 || true
+        if [ "$cracked" -eq 1 ]; then save_result "$hf"; return; fi
+        warn "Tier 2: no match"
+
+        # ── Tier 3: Rockyou + rules ───────────────────────────────────────────
+        for rulefile in best64.rule d3ad0ne.rule; do
+            [ -f "${RULES_DIR}/${rulefile}" ] || continue
+            info "Tier 3/4: rockyou + $rulefile (5min cap)"
+            hashcat -m "$hmode" -a 0 --potfile-path "$POTFILE" --quiet --runtime=300 \
+                -r "${RULES_DIR}/${rulefile}" "$hf" "$ROCKYOU" 2>/dev/null && cracked=1 || true
+            if [ "$cracked" -eq 1 ]; then save_result "$hf"; return; fi
+        done
+        warn "Tier 3: no match"
+    else
+        warn "Tier 2/3: rockyou not found (apt install wordlists  or  locate rockyou.txt)"
+    fi
+
+    # ── Tier 4: Masks ─────────────────────────────────────────────────────────
+    if command -v hashcat &>/dev/null; then
+        info "Tier 4/4: 8-digit mask (?d × 8, 2min)"
+        hashcat -m "$hmode" -a 3 --potfile-path "$POTFILE" --quiet --runtime=120 \
+            "$hf" "?d?d?d?d?d?d?d?d" 2>/dev/null && cracked=1 || true
+        if [ "$cracked" -eq 1 ]; then save_result "$hf"; return; fi
+
+        info "Tier 4/4: alpha+digit mask (?l?l?l?l?d?d?d?d, 2min)"
+        hashcat -m "$hmode" -a 3 --potfile-path "$POTFILE" --quiet --runtime=120 \
+            "$hf" "?l?l?l?l?d?d?d?d" 2>/dev/null && cracked=1 || true
+        if [ "$cracked" -eq 1 ]; then save_result "$hf"; return; fi
+        warn "Tier 4: no match"
+    fi
+
+    echo ""
+    fail "Not cracked — all tiers exhausted."
+    info "Try a larger wordlist:"
+    info "  wifi-autocrack $cap /path/to/bigger.txt"
+    info "  hashcat -m 22000 $hf /path/to/bigger.txt"
+}
+
+crack_with_wordlist() {
+    local cap="$1" wordlist="$2"
+    [ -f "$cap" ]      || { fail "Capture not found: $cap";  exit 1; }
+    [ -f "$wordlist" ] || { fail "Wordlist not found: $wordlist"; exit 1; }
+    local hf
+    hf=$(convert_cap "$cap")
+    [ -z "$hf" ] && { fail "Cannot convert capture"; exit 1; }
+    local hmode=22000; [[ "$hf" == *.hccapx ]] && hmode=2500
+    info "Cracking with custom wordlist: $wordlist"
+    hashcat -m "$hmode" -a 0 --potfile-path "$POTFILE" \
+        "$hf" "$wordlist" 2>/dev/null && save_result "$hf" || fail "Not cracked"
+}
+
+case "${1:-help}" in
+    crack|"")
+        [ -z "${2:-}" ] && { echo "Usage: wifi-autocrack <cap_file> [wordlist]"; exit 1; }
+        if [ -n "${3:-}" ]; then
+            crack_with_wordlist "$2" "$3"
+        else
+            crack "$2"
+        fi
+        ;;
+    list)
+        echo -e "${CYAN}[*] Captured files in $HANDSHAKES:${NC}"
+        ls -lh "$HANDSHAKES"/*.cap "$HANDSHAKES"/*.pcap "$HANDSHAKES"/*.hc22000 2>/dev/null || echo "  (none)"
+        echo ""
+        echo -e "${CYAN}[*] Cracked PSKs:${NC}"
+        cat "$CRACKEDFILE" 2>/dev/null || echo "  (none yet)"
+        ;;
+    # direct call: wifi-autocrack <file>  (no subcommand)
+    *.cap|*.pcap|*.22000|*.hccapx)
+        crack "$1"
+        ;;
+    help|--help|-h|*)
+        echo "Usage: wifi-autocrack <cap_file> [wordlist]"
+        echo "       wifi-autocrack list"
+        echo ""
+        echo "  cap_file  — .cap / .pcap / .hc22000 / .hccapx"
+        echo "  wordlist  — optional custom wordlist (skips tiers 1-3)"
+        echo ""
+        echo "Crack tiers (automatic):"
+        echo "  1. ${#TOP_ROUTER_PASSES[@]} common router default passwords (instant)"
+        echo "  2. rockyou.txt wordlist (5min cap)"
+        echo "  3. rockyou + hashcat rules best64 + d3ad0ne (5min each)"
+        echo "  4. 8-digit mask: ?d×8 and ?l?l?l?l?d?d?d?d (2min each)"
+        echo ""
+        echo "Cracked PSKs saved to: $CRACKEDFILE"
+        exit 1
+        ;;
+esac

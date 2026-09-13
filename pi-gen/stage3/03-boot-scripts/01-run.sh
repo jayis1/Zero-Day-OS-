@@ -11,7 +11,8 @@ mkdir -p "${BIN}"
 
 for script in panic zeroday-boot zeroday-bootanim first-boot power-mode tamper-watch \
     cardputer-wifi-setup cardputer-wifi-toggle stealth-backlight-toggle usb-gadget-mode \
-    mac-rotate loot-organize opencode-session opencode-ask device-lock webui webui-toggle; do
+    mac-rotate loot-organize opencode-session opencode-ask device-lock webui webui-toggle \
+    zd-git-push; do
     if [ -f "${SCRIPT_SRC}/system/${script}" ]; then
         cp "${SCRIPT_SRC}/system/${script}" "${BIN}/${script}"
         chmod +x "${BIN}/${script}"

