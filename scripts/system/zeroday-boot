@@ -66,10 +66,5 @@ else
     fi
 fi
 
-echo "[zeroday-boot] Starting wifi-autocrack watcher..."
-if command -v wifi-autocrack >/dev/null 2>&1; then
-    wifi-autocrack watch &
-fi
-
 echo "[zeroday-boot] ZERO-DAY OS ready."
 echo "[zeroday-boot] Fn+Tab: Launcher  |  Fn+P: Panic  |  Fn+O: OpenCode"
