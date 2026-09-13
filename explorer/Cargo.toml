@@ -6,6 +6,7 @@ description = "File explorer for ZERO-DAY OS on M5Stack Cardputer Zero (320x170,
 authors = ["ZERO-DAY OS"]
 
 [dependencies]
+ratatui = { version = "0.30", features = ["crossterm"] }
 crossterm = "0.28"
 unicode-width = "0.2"
 walkdir = "2"

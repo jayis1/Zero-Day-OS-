@@ -32,6 +32,10 @@ pub enum FnAction {
     HttpProbe,
     PrivescCheck,
     PostHarvest,
+    SysTui,
+    NetTui,
+    LootTui,
+    ScanTui,
 }
 
 mod keycodes {
@@ -63,6 +67,9 @@ mod keycodes {
     pub const K: u32 = 37;
     pub const V: u32 = 47;
     pub const E: u32 = 18;
+    pub const F: u32 = 33;   // sys-tui
+    pub const T: u32 = 20;   // scan-tui
+    pub const J_KEY: u32 = 36; // net-tui (not 'j' nav — compositor intercepts only with Fn held)
 }
 
 #[derive(Debug, Clone)]
@@ -116,6 +123,9 @@ impl InputHandler {
             keycodes::K => Some(FnAction::HttpProbe),
             keycodes::V => Some(FnAction::PrivescCheck),
             keycodes::E => Some(FnAction::PostHarvest),
+            keycodes::F => Some(FnAction::SysTui),
+            keycodes::T => Some(FnAction::ScanTui),
+            keycodes::J_KEY => Some(FnAction::NetTui),
             _ => None,
         };
 
@@ -163,9 +173,13 @@ impl InputHandler {
             FnAction::Youtube => ("st", vec!["-e", "yt", "search"]),
             FnAction::WebUI => ("webui-toggle", vec![]),
             FnAction::MediaBox => ("jellyfin-tv", vec![]),
-            FnAction::HttpProbe => ("st", vec!["-e", "http-probe", "auto"]),
+            FnAction::HttpProbe   => ("st", vec!["-e", "http-probe", "auto"]),
             FnAction::PrivescCheck => ("st", vec!["-e", "privesc-check", "quick"]),
-            FnAction::PostHarvest => ("st", vec!["-e", "post-harvest", "quick"]),
+            FnAction::PostHarvest  => ("st", vec!["-e", "post-harvest", "quick"]),
+            FnAction::SysTui       => ("st", vec!["-e", "sys-tui"]),
+            FnAction::NetTui       => ("st", vec!["-e", "net-tui"]),
+            FnAction::LootTui      => ("st", vec!["-e", "loot-tui"]),
+            FnAction::ScanTui      => ("st", vec!["-e", "scan-tui"]),
             FnAction::None => return,
         };
 

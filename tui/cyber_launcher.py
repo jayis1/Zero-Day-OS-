@@ -224,6 +224,10 @@ TOOLS = {
         {"name": "WiFi Toggle",       "desc": "Toggle wlan0 on/off",             "cmd": "sudo cardputer-wifi-toggle",        "need_root": True},
     ],
     "SYS": [
+        {"name": "System Monitor",   "desc": "CPU/RAM/batt/temp/processes live", "cmd": "sys-tui",                         "need_root": False},
+        {"name": "Net Dashboard",     "desc": "Live host/port table from scans",  "cmd": "net-tui",                         "need_root": False},
+        {"name": "Loot Browser",      "desc": "Browse loot with file preview",    "cmd": "loot-tui",                        "need_root": False},
+        {"name": "Scan Dashboard",    "desc": "Live nmap/ragnar-scan TUI",        "cmd": "scan-tui",                        "need_root": False},
         {"name": "Battery Status",    "desc": "Show battery level + voltage",    "cmd": "cardputer-battery",                 "need_root": False},
         {"name": "MonsterC5 Status",  "desc": "Check MonsterC5 connection",      "cmd": "monsterctl status",                 "need_root": False},
         {"name": "Dongle Status",     "desc": "RTL8821CU dongle manager",        "cmd": "dongle-setup status",               "need_root": False},
