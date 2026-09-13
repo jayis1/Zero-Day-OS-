@@ -1,0 +1,21 @@
+[Unit]
+Description=ZERO-DAY OS Fleet Discovery Beacon
+Documentation=https://github.com/jayis1/Zero-Day-OS-
+After=network-online.target zeroday-boot.service
+Wants=network-online.target
+
+[Service]
+Type=forking
+PIDFile=/tmp/fleet-beacon.pid
+ExecStart=/usr/local/bin/fleet-beacon start
+ExecStop=/usr/local/bin/fleet-beacon stop
+Restart=on-failure
+RestartSec=15
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+StandardOutput=append:/opt/cardputer/loot/general/fleet-beacon.log
+StandardError=append:/opt/cardputer/loot/general/fleet-beacon.log
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,297 @@
+#!/bin/bash
+# /usr/local/bin/fleet-beacon
+# ZERO-DAY OS — Collective Fleet Discovery Beacon
+#
+# Broadcasts device presence over LAN UDP + Meshtastic mesh.
+# Other fleet devices running fleet-beacon can see each other via fleet-ctl.
+#
+# Usage: fleet-beacon [start|stop|ping|listen|status|nodes]
+#
+# Beacon payload (JSON, broadcast UDP port 40420):
+#   { "id":"<sha8>", "host":"<hostname>", "ip":"<ip>",
+#     "batt":<0-100>, "profile":"<power>", "op":"<operation>",
+#     "gps":"<lat,lon>", "ts":<unix>, "ver":"zdos-4.3" }
+
+set -euo pipefail
+
+BEACON_PORT=40420
+MESH_CHANNEL="${FLEET_MESH_CHANNEL:-ZeroDayFleet}"
+LOOT="/opt/cardputer/loot"
+STATE_DIR="/tmp/fleet-beacon"
+PID_FILE="/tmp/fleet-beacon.pid"
+NODES_FILE="${STATE_DIR}/nodes.json"
+LOG_FILE="${LOOT}/general/fleet-beacon.log"
+OP_FILE="/tmp/zd-current-op"
+
+RED='\033[0;31m'
+CYAN='\033[0;36m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m'
+
+mkdir -p "$STATE_DIR" "$(dirname "$LOG_FILE")"
+
+# ── payload helpers ───────────────────────────────────────────────────────────
+
+device_id() {
+    # Stable 8-char ID from hostname + MAC
+    local mac
+    mac=$(ip link show 2>/dev/null | awk '/ether/{print $2; exit}' | tr -d ':')
+    echo "${HOSTNAME:-zdos}${mac}" | sha256sum | head -c 8
+}
+
+get_battery() {
+    cat /sys/class/power_supply/*/capacity 2>/dev/null | head -1 || echo "100"
+}
+
+get_power_profile() {
+    local gov
+    gov=$(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null || echo "ondemand")
+    case "$gov" in
+        performance) echo "performance" ;;
+        powersave)   echo "stealth" ;;
+        *)           echo "balanced" ;;
+    esac
+}
+
+get_local_ip() {
+    ip -4 route get 1.1.1.1 2>/dev/null | grep -oP 'src \K\S+' | head -1 || echo "0.0.0.0"
+}
+
+get_gps() {
+    if command -v gpspipe &>/dev/null && pgrep gpsd &>/dev/null; then
+        local r
+        r=$(gpspipe -w -n 5 2>/dev/null | python3 -c "
+import sys, json
+for line in sys.stdin:
+    try:
+        d=json.loads(line)
+        if d.get('class')=='TPV' and d.get('mode',0)>=2:
+            print(f\"{d.get('lat',0):.5f},{d.get('lon',0):.5f}\")
+            sys.exit(0)
+    except: pass
+print('0,0')
+" 2>/dev/null)
+        echo "${r:-0,0}"
+    else
+        echo "0,0"
+    fi
+}
+
+get_current_op() {
+    [ -f "$OP_FILE" ] && cat "$OP_FILE" || echo "idle"
+}
+
+build_beacon() {
+    local id ip batt profile gps op ts
+    id=$(device_id)
+    ip=$(get_local_ip)
+    batt=$(get_battery)
+    profile=$(get_power_profile)
+    gps=$(get_gps)
+    op=$(get_current_op)
+    ts=$(date +%s)
+    printf '{"id":"%s","host":"%s","ip":"%s","batt":%s,"profile":"%s","op":"%s","gps":"%s","ts":%s,"ver":"zdos-4.3"}' \
+        "$id" "${HOSTNAME:-zdos}" "$ip" "$batt" "$profile" "$op" "$gps" "$ts"
+}
+
+# ── UDP broadcast ─────────────────────────────────────────────────────────────
+
+udp_ping() {
+    local payload
+    payload=$(build_beacon)
+    # Use Python for UDP broadcast — no nc -u broadcast on all arm builds
+    python3 -c "
+import socket, sys
+payload = sys.argv[1].encode()
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+s.settimeout(1)
+s.sendto(payload, ('<broadcast>', $BEACON_PORT))
+s.close()
+" "$payload" 2>/dev/null || true
+}
+
+udp_listen() {
+    python3 -c "
+import socket, json, time, sys, os
+port = $BEACON_PORT
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+try: s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+except: pass
+s.bind(('', port))
+nodes_file = '${NODES_FILE}'
+my_id_cmd = os.popen('$(which bash) -c \"source /usr/local/bin/fleet-beacon 2>/dev/null; device_id\" 2>/dev/null').read().strip()
+while True:
+    try:
+        data, addr = s.recvfrom(1024)
+        node = json.loads(data.decode())
+        node['_addr'] = addr[0]
+        node['_seen'] = int(time.time())
+        # Load existing nodes
+        try:
+            with open(nodes_file) as f: nodes = json.load(f)
+        except: nodes = {}
+        # Update node entry (keyed by device ID)
+        nodes[node.get('id','?')] = node
+        # Prune nodes not seen in 10 minutes
+        cutoff = int(time.time()) - 600
+        nodes = {k: v for k, v in nodes.items() if v.get('_seen', 0) > cutoff}
+        with open(nodes_file, 'w') as f: json.dump(nodes, f)
+    except json.JSONDecodeError: pass
+    except Exception as e:
+        sys.stderr.write(str(e) + '\n')
+" 2>>"$LOG_FILE"
+}
+
+# ── Meshtastic beacon ─────────────────────────────────────────────────────────
+
+mesh_ping() {
+    if ! command -v meshtastic &>/dev/null; then return 1; fi
+    local payload
+    payload=$(build_beacon)
+    meshtastic --sendtext "FLEET:${payload}" --ch-name "$MESH_CHANNEL" 2>/dev/null || true
+}
+
+# ── subcommands ───────────────────────────────────────────────────────────────
+
+cmd_ping() {
+    echo -e "${CYAN}[*] Sending fleet beacon...${NC}"
+    local payload
+    payload=$(build_beacon)
+    echo -e "${CYAN}[*] Payload: ${NC}${payload}"
+    udp_ping
+    echo -e "${GREEN}[+] UDP broadcast sent${NC}"
+    if command -v meshtastic &>/dev/null; then
+        mesh_ping && echo -e "${GREEN}[+] Meshtastic beacon sent${NC}" \
+                  || echo -e "${YELLOW}[!] Meshtastic not available${NC}"
+    fi
+}
+
+cmd_start() {
+    if [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
+        echo -e "${YELLOW}[!] fleet-beacon already running (PID $(cat "$PID_FILE"))${NC}"
+        exit 0
+    fi
+
+    echo -e "${CYAN}[*] Starting fleet-beacon...${NC}"
+
+    # Background listener
+    udp_listen &
+    local listen_pid=$!
+
+    # Background periodic ping loop
+    (
+        while true; do
+            udp_ping
+            mesh_ping 2>/dev/null || true
+            sleep 60
+        done
+    ) &
+    local ping_pid=$!
+
+    # Write composite PID file
+    echo "${listen_pid} ${ping_pid}" > "$PID_FILE"
+    echo -e "${GREEN}[+] fleet-beacon started (listener:${listen_pid} pinger:${ping_pid})${NC}"
+    echo -e "${CYAN}[*] UDP port ${BEACON_PORT} | mesh channel ${MESH_CHANNEL}${NC}"
+}
+
+cmd_stop() {
+    if [ ! -f "$PID_FILE" ]; then
+        echo -e "${YELLOW}[!] Not running${NC}"; exit 0
+    fi
+    read -r -a pids < "$PID_FILE"
+    for pid in "${pids[@]}"; do
+        kill "$pid" 2>/dev/null && echo -e "${GREEN}[+] Stopped PID $pid${NC}" \
+                                 || echo -e "${YELLOW}[!] PID $pid already gone${NC}"
+    done
+    rm -f "$PID_FILE"
+}
+
+cmd_nodes() {
+    if [ ! -f "$NODES_FILE" ]; then
+        echo "[!] No nodes discovered yet. Start fleet-beacon and wait."
+        exit 0
+    fi
+
+    echo -e "${CYAN}╔═══════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${CYAN}║           FLEET NODES — ZERO-DAY OS                       ║${NC}"
+    echo -e "${CYAN}╚═══════════════════════════════════════════════════════════╝${NC}"
+    echo ""
+
+    python3 -c "
+import json, time
+
+try:
+    with open('${NODES_FILE}') as f:
+        nodes = json.load(f)
+except Exception as e:
+    print(f'[!] Could not load nodes: {e}')
+    exit(1)
+
+now = int(time.time())
+print(f'  {'ID':8}  {'Host':15}  {'IP':15}  {'Batt':5}  {'Profile':12}  {'Op':10}  {'GPS':15}  Seen')
+print('  ' + '-' * 100)
+
+for nid, n in sorted(nodes.items(), key=lambda x: x[1].get('_seen', 0), reverse=True):
+    age = now - n.get('_seen', 0)
+    age_str = f'{age}s ago' if age < 60 else f'{age//60}m ago'
+    fresh = '\033[0;32m' if age < 120 else '\033[1;33m' if age < 300 else '\033[0;31m'
+    nc = '\033[0m'
+    print(f'  {nid:8}  {n.get(\"host\",\"?\"):15}  {n.get(\"ip\",\"?\"):15}  {str(n.get(\"batt\",\"?\"))+\"%\":5}  {n.get(\"profile\",\"?\"):12}  {n.get(\"op\",\"?\"):10}  {n.get(\"gps\",\"?\"):15}  {fresh}{age_str}{nc}')
+
+print(f'\n  {len(nodes)} node(s) in fleet (pruned if >10min silent)')
+"
+}
+
+cmd_status() {
+    local running="stopped"
+    [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE" | awk '{print $1}')" 2>/dev/null && running="running"
+
+    echo -e "${CYAN}[*] fleet-beacon: ${running}${NC}"
+    echo -e "${CYAN}[*] Device ID:    $(device_id)${NC}"
+    echo -e "${CYAN}[*] Local IP:     $(get_local_ip)${NC}"
+    echo -e "${CYAN}[*] Battery:      $(get_battery)%${NC}"
+    echo -e "${CYAN}[*] Profile:      $(get_power_profile)${NC}"
+    echo -e "${CYAN}[*] Current op:   $(get_current_op)${NC}"
+
+    local node_count=0
+    [ -f "$NODES_FILE" ] && node_count=$(python3 -c "import json; print(len(json.load(open('${NODES_FILE}'))))" 2>/dev/null || echo 0)
+    echo -e "${CYAN}[*] Fleet nodes:  ${node_count} discovered${NC}"
+}
+
+cmd_set_op() {
+    local op="${1:-idle}"
+    echo "$op" > "$OP_FILE"
+    echo -e "${GREEN}[+] Current operation set to: $op${NC}"
+}
+
+# ── main ──────────────────────────────────────────────────────────────────────
+
+case "${1:-status}" in
+    start|--start)    cmd_start ;;
+    stop|--stop)      cmd_stop ;;
+    ping|--ping)      cmd_ping ;;
+    listen)           udp_listen ;;
+    nodes|--nodes)    cmd_nodes ;;
+    status|--status)  cmd_status ;;
+    op)               shift; cmd_set_op "${*:-idle}" ;;
+    *)
+        echo "Usage: fleet-beacon <command>"
+        echo ""
+        echo "Commands:"
+        echo "  start   — Start background beacon daemon (listener + pinger)"
+        echo "  stop    — Stop beacon daemon"
+        echo "  ping    — Send one beacon immediately"
+        echo "  nodes   — Show discovered fleet nodes"
+        echo "  status  — Show local device status"
+        echo "  op <x>  — Set current operation label (shown to fleet)"
+        echo ""
+        echo "Config:"
+        echo "  FLEET_MESH_CHANNEL — Meshtastic channel (default: ZeroDayFleet)"
+        echo ""
+        echo "Ports: UDP ${BEACON_PORT} (LAN broadcast)"
+        exit 1
+        ;;
+esac

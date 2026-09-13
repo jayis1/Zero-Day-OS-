@@ -1,0 +1,395 @@
+#!/bin/bash
+# /usr/local/bin/fleet-ctl
+# ZERO-DAY OS — Collective Fleet C2 Controller
+#
+# Dispatches commands to fleet nodes over LAN UDP or Meshtastic mesh.
+# Works alongside fleet-beacon (discovery) and zd-cron (local scheduling).
+#
+# Usage: fleet-ctl <command> [options]
+#
+# Fleet C2 Protocol (UDP port 40421):
+#   Request:  {"from":"<id>","to":"<id|all>","cmd":"<cmd>","arg":"<args>","tk":"<token>","ts":<unix>}
+#   Response: {"from":"<id>","host":"<h>","rc":<0|1>,"out":"<stdout>","ts":<unix>}
+#
+# OPSEC: All fleet comms are authorized only when a shared token
+# matches (/opt/cardputer/config/fleet.token). No token = listen-only.
+
+set -euo pipefail
+
+C2_PORT=40421
+BEACON_PORT=40420
+NODES_FILE="/tmp/fleet-beacon/nodes.json"
+TOKEN_FILE="/opt/cardputer/config/fleet.token"
+LOG_FILE="/opt/cardputer/loot/general/fleet-ctl.log"
+PID_FILE="/tmp/fleet-ctl-listener.pid"
+RESP_DIR="/tmp/fleet-responses"
+
+RED='\033[0;31m'
+CYAN='\033[0;36m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m'
+
+mkdir -p "$RESP_DIR" "$(dirname "$LOG_FILE")"
+
+device_id() {
+    local mac
+    mac=$(ip link show 2>/dev/null | awk '/ether/{print $2; exit}' | tr -d ':')
+    echo "${HOSTNAME:-zdos}${mac}" | sha256sum | head -c 8
+}
+
+get_token() {
+    [ -f "$TOKEN_FILE" ] && cat "$TOKEN_FILE" || echo ""
+}
+
+get_nodes() {
+    [ -f "$NODES_FILE" ] || { echo "[]"; return; }
+    python3 -c "
+import json, time
+try:
+    with open('${NODES_FILE}') as f: nodes = json.load(f)
+    cutoff = int(time.time()) - 300  # 5-minute freshness
+    fresh = [n for n in nodes.values() if n.get('_seen', 0) > cutoff]
+    print(json.dumps(fresh))
+except: print('[]')
+"
+}
+
+# ── C2 listener (runs on each device, executes authorized commands) ───────────
+
+start_listener() {
+    if [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
+        echo -e "${YELLOW}[!] Listener already running (PID $(cat "$PID_FILE"))${NC}"
+        return
+    fi
+    python3 -c "
+import socket, json, subprocess, time, os, hashlib
+
+port = $C2_PORT
+token_file = '${TOKEN_FILE}'
+log_file = '${LOG_FILE}'
+resp_dir = '${RESP_DIR}'
+my_id_raw = os.popen('hostname').read().strip()
+my_id = hashlib.sha256((my_id_raw + ''.join(
+    open('/sys/class/net/' + n + '/address').read().strip().replace(':', '')
+    for n in os.listdir('/sys/class/net/') if n != 'lo'
+    if os.path.exists('/sys/class/net/' + n + '/address')
+)).encode()).hexdigest()[:8]
+
+def log(msg):
+    ts = time.strftime('%H:%M:%S')
+    line = f'[{ts}] {msg}\n'
+    open(log_file, 'a').write(line)
+
+def get_token():
+    try: return open(token_file).read().strip()
+    except: return ''
+
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+try: s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+except: pass
+s.bind(('', port))
+
+# Sender socket for responses
+rs = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+
+ALLOWED_CMDS = {
+    'status': 'power-mode',
+    'loot-status': 'loot-organize status',
+    'battery': 'cat /sys/class/power_supply/*/capacity 2>/dev/null | head -1',
+    'whoami': 'hostname && id',
+    'ragnar': 'ragnar-scan auto quick 2>&1 | tail -20',
+    'wifi-survey': 'wifi-survey-log wlan0 30 2>&1 | tail -10',
+    'loot-compress': 'loot-organize compress',
+    'loot-organize': 'loot-organize organize',
+    'mac-rotate': 'mac-rotate wlan0 2>&1',
+    'reboot': 'systemctl reboot 2>&1',
+    'panic': 'panic 2>&1',
+    'beacon': 'fleet-beacon ping 2>&1',
+    'exec': None,   # special: executes args directly (token required)
+}
+
+log('fleet-ctl C2 listener started on port ' + str(port))
+
+while True:
+    try:
+        data, addr = s.recvfrom(4096)
+        req = json.loads(data.decode())
+
+        to = req.get('to', '')
+        from_id = req.get('from', '?')
+        cmd = req.get('cmd', '')
+        args = req.get('arg', '')
+        req_token = req.get('tk', '')
+        ts = req.get('ts', 0)
+
+        # Only handle if addressed to me or all
+        if to not in ('all', my_id): continue
+
+        # Skip stale requests (>30s old)
+        if abs(time.time() - ts) > 30: continue
+
+        # Token check
+        our_token = get_token()
+        if not our_token:
+            log(f'Ignoring cmd from {from_id}: no fleet token configured')
+            continue
+        if req_token != our_token:
+            log(f'Rejecting cmd from {from_id}: bad token')
+            continue
+
+        # Resolve command
+        shell_cmd = None
+        if cmd == 'exec' and args:
+            shell_cmd = args
+        elif cmd in ALLOWED_CMDS and ALLOWED_CMDS[cmd]:
+            shell_cmd = ALLOWED_CMDS[cmd]
+            if args: shell_cmd += ' ' + args
+
+        if not shell_cmd:
+            out = f'[!] Unknown or forbidden command: {cmd}'
+            rc = 1
+        else:
+            log(f'Executing [{shell_cmd}] for {from_id}')
+            try:
+                result = subprocess.run(shell_cmd, shell=True, capture_output=True,
+                                         text=True, timeout=60)
+                out = (result.stdout + result.stderr).strip()[:2000]
+                rc = result.returncode
+            except subprocess.TimeoutExpired:
+                out = '[!] Command timed out'
+                rc = 1
+            except Exception as e:
+                out = str(e)
+                rc = 1
+
+        # Send response back to sender
+        resp = json.dumps({'from': my_id, 'host': my_id_raw,
+                           'rc': rc, 'out': out, 'ts': int(time.time())})
+        rs.sendto(resp.encode(), (addr[0], $C2_PORT))
+
+        # Save response locally too
+        os.makedirs(resp_dir, exist_ok=True)
+        with open(os.path.join(resp_dir, f'{from_id}_{int(time.time())}.json'), 'w') as f:
+            json.dump({'from': my_id, 'cmd': cmd, 'rc': rc, 'out': out, 'addr': addr[0]}, f)
+
+    except json.JSONDecodeError: pass
+    except Exception as e:
+        log('Error: ' + str(e))
+" >> "$LOG_FILE" 2>&1 &
+    echo $! > "$PID_FILE"
+    disown
+    echo -e "${GREEN}[+] C2 listener started (PID $(cat "$PID_FILE"))${NC}"
+}
+
+stop_listener() {
+    [ -f "$PID_FILE" ] || { echo "[!] Not running"; return; }
+    kill "$(cat "$PID_FILE")" 2>/dev/null && echo "[+] Listener stopped" || echo "[!] Already stopped"
+    rm -f "$PID_FILE"
+}
+
+# ── dispatch command to fleet ────────────────────────────────────────────────
+
+dispatch() {
+    local target="${1:-all}"
+    local cmd="${2:-status}"
+    local args="${3:-}"
+    local timeout_sec="${4:-15}"
+
+    local token
+    token=$(get_token)
+    if [ -z "$token" ]; then
+        echo -e "${RED}[!] No fleet token. Create one: fleet-ctl token-create${NC}"
+        exit 1
+    fi
+
+    local my_id
+    my_id=$(device_id)
+
+    local nodes_json
+    nodes_json=$(get_nodes)
+
+    local target_ips
+    if [ "$target" = "all" ]; then
+        target_ips=$(python3 -c "
+import json, sys
+nodes = json.loads(sys.argv[1])
+print('\n'.join(n.get('ip','') for n in nodes if n.get('ip') and n.get('ip') != '0.0.0.0'))
+" "$nodes_json")
+    else
+        target_ips=$(python3 -c "
+import json, sys
+nodes = json.loads(sys.argv[1])
+# Match by ID or hostname
+for n in nodes:
+    if n.get('id','') == sys.argv[2] or n.get('host','') == sys.argv[2]:
+        print(n.get('ip',''))
+        break
+" "$nodes_json" "$target")
+    fi
+
+    if [ -z "$target_ips" ]; then
+        echo -e "${YELLOW}[!] No matching fleet nodes for target '$target'${NC}"
+        echo "[*] Known nodes:"
+        fleet-ctl nodes
+        exit 1
+    fi
+
+    local req_ts
+    req_ts=$(date +%s)
+    local req
+    req=$(python3 -c "
+import json, sys
+print(json.dumps({'from': sys.argv[1], 'to': sys.argv[2], 'cmd': sys.argv[3],
+                   'arg': sys.argv[4], 'tk': sys.argv[5], 'ts': int(sys.argv[6])}))
+" "$my_id" "$target" "$cmd" "$args" "$token" "$req_ts")
+
+    echo -e "${CYAN}[*] Dispatching [$cmd] to [$target]...${NC}"
+
+    # Send to each target IP
+    while IFS= read -r ip; do
+        [ -z "$ip" ] && continue
+        python3 -c "
+import socket, sys
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+s.sendto(sys.argv[1].encode(), (sys.argv[2], $C2_PORT))
+s.close()
+" "$req" "$ip" && echo -e "${GREEN}  [+] Sent to $ip${NC}" \
+               || echo -e "${RED}  [!] Failed to send to $ip${NC}"
+    done <<< "$target_ips"
+
+    # Collect responses
+    echo ""
+    echo -e "${CYAN}[*] Waiting ${timeout_sec}s for responses...${NC}"
+    echo ""
+    python3 -c "
+import socket, json, sys, time
+
+port = $C2_PORT
+timeout = int(sys.argv[1])
+
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+try: s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+except: pass
+s.bind(('', port))
+s.settimeout(timeout)
+
+deadline = time.time() + timeout
+seen = set()
+count = 0
+while time.time() < deadline:
+    try:
+        data, addr = s.recvfrom(4096)
+        resp = json.loads(data.decode())
+        if 'from' not in resp or 'out' not in resp: continue
+        node_id = resp['from']
+        if node_id in seen: continue
+        seen.add(node_id)
+        count += 1
+        rc = resp.get('rc', -1)
+        status = '\033[0;32m[OK]\033[0m' if rc == 0 else '\033[0;31m[FAIL]\033[0m'
+        print(f'\033[0;36m─── {resp.get(\"host\", node_id)} ({node_id}) {status}\033[0m')
+        for line in resp.get('out', '').splitlines():
+            print(f'  {line}')
+        print()
+    except socket.timeout: break
+    except: pass
+print(f'  \033[2m{count} response(s) received\033[0m')
+" "$timeout_sec" 2>/dev/null || echo "  (no responses)"
+}
+
+# ── subcommands ───────────────────────────────────────────────────────────────
+
+cmd_nodes() {
+    fleet-beacon nodes 2>/dev/null || {
+        echo "[!] fleet-beacon nodes not available"
+        echo "[*] Start fleet-beacon first: fleet-beacon start"
+    }
+}
+
+cmd_token_create() {
+    mkdir -p "$(dirname "$TOKEN_FILE")"
+    local tok
+    tok=$(head -c 16 /dev/urandom | xxd -p)
+    echo "$tok" > "$TOKEN_FILE"
+    chmod 600 "$TOKEN_FILE"
+    echo -e "${GREEN}[+] Fleet token created: $tok${NC}"
+    echo -e "${CYAN}[*] Token file: $TOKEN_FILE${NC}"
+    echo ""
+    echo "[*] Share this token with other fleet devices:"
+    echo "    echo '$tok' > $TOKEN_FILE && chmod 600 $TOKEN_FILE"
+}
+
+cmd_exec_all() {
+    local cmd="${1:-}"
+    [ -z "$cmd" ] && { echo "Usage: fleet-ctl exec-all <command>"; exit 1; }
+    dispatch all exec "$cmd"
+}
+
+# ── main ──────────────────────────────────────────────────────────────────────
+
+case "${1:-help}" in
+    listen|start)       start_listener ;;
+    stop)               stop_listener ;;
+    nodes)              cmd_nodes ;;
+
+    # Shorthand dispatches
+    status)             dispatch all status "" 10 ;;
+    battery)            dispatch all battery "" 10 ;;
+    loot)               dispatch all loot-status "" 10 ;;
+    ragnar)             dispatch all ragnar "" 60 ;;
+    wifi-survey)        dispatch all wifi-survey "" 45 ;;
+    mac-rotate)         dispatch all mac-rotate "" 20 ;;
+    reboot)             dispatch all reboot "" 5 ;;
+
+    # Parameterized dispatch
+    cmd)
+        shift
+        TARGET="${1:-all}"; shift || true
+        CMD="${1:-status}"; shift || true
+        ARGS="${*:-}"
+        dispatch "$TARGET" "$CMD" "$ARGS"
+        ;;
+
+    exec-all)
+        shift; cmd_exec_all "$*" ;;
+
+    token-create)       cmd_token_create ;;
+    token-show)
+        echo -e "${CYAN}[*] Fleet token: $(get_token || echo '(none)')${NC}" ;;
+
+    logs)
+        tail -30 "$LOG_FILE" 2>/dev/null || echo "(no log yet)" ;;
+
+    *)
+        echo "Usage: fleet-ctl <command>"
+        echo ""
+        echo "Discovery:"
+        echo "  nodes         — Show discovered fleet nodes (from fleet-beacon)"
+        echo ""
+        echo "C2 Dispatch (all fleet nodes):"
+        echo "  status        — Get power-mode status from all nodes"
+        echo "  battery       — Get battery % from all nodes"
+        echo "  loot          — Get loot dir status from all nodes"
+        echo "  ragnar        — Trigger quick ragnar-scan on all nodes"
+        echo "  wifi-survey   — 30s WiFi survey on all nodes"
+        echo "  mac-rotate    — Rotate MAC on all nodes"
+        echo "  reboot        — Reboot all nodes (!)"
+        echo ""
+        echo "Advanced:"
+        echo "  cmd <node> <cmd> [args]   — Run allowed cmd on specific node"
+        echo "  exec-all <shell_cmd>      — Run raw command on all nodes (token required)"
+        echo ""
+        echo "Token:"
+        echo "  token-create  — Generate fleet auth token"
+        echo "  token-show    — Print current token"
+        echo ""
+        echo "Daemon:"
+        echo "  listen/start  — Start C2 listener on this device"
+        echo "  stop          — Stop C2 listener"
+        echo "  logs          — Show recent C2 log"
+        exit 1
+        ;;
+esac

@@ -1,0 +1,292 @@
+#!/bin/bash
+# /usr/local/bin/auto-recon
+# ZERO-DAY OS — Autonomous Full-Spectrum Reconnaissance Chain
+#
+# Runs a full passive → active → intel recon pipeline automatically.
+# Feeds results into /opt/cardputer/loot/ organized by session.
+# Integrates with zd-cron for scheduled runs and fleet-ctl for dispatch.
+#
+# Usage: auto-recon [mode] [interface]
+#   mode: quick | full | passive | stealth
+#   interface: auto | wlan0 | eth0 | ...
+#
+# Modes:
+#   passive   — WiFi survey + BLE scan only, no active probes
+#   quick     — passive + ARP discovery + port scan (top 1000)
+#   full      — quick + vuln scan + service enum + threat intel lookup
+#   stealth   — passive only, MAC rotated, no broadcast, randomized timing
+
+set -euo pipefail
+
+MODE="${1:-quick}"
+IFACE="${2:-auto}"
+TS=$(date +%Y%m%d_%H%M%S)
+SESSION_DIR="/opt/cardputer/loot/recon/auto_${TS}"
+LOG="${SESSION_DIR}/auto-recon.log"
+SUMMARY="${SESSION_DIR}/SUMMARY.txt"
+
+RED='\033[0;31m'
+CYAN='\033[0;36m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BOLD='\033[1m'
+NC='\033[0m'
+
+mkdir -p "$SESSION_DIR"
+
+log()    { echo "[$(date '+%H:%M:%S')] $*" | tee -a "$LOG"; }
+ok()     { echo -e "${GREEN}[+]${NC} $*" | tee -a "$LOG"; }
+warn()   { echo -e "${YELLOW}[!]${NC} $*" | tee -a "$LOG"; }
+info()   { echo -e "${CYAN}[*]${NC} $*" | tee -a "$LOG"; }
+banner() { echo -e "${BOLD}${CYAN}━━━ $* ━━━${NC}" | tee -a "$LOG"; }
+fail()   { echo -e "${RED}[!] $*${NC}" | tee -a "$LOG"; }
+
+T_START=$(date +%s)
+
+echo -e "${CYAN}"
+cat << 'BANNER'
+ █████╗ ██╗   ██╗████████╗ ██████╗       ██████╗ ███████╗ ██████╗ ██████╗ ███╗   ██╗
+██╔══██╗██║   ██║╚══██╔══╝██╔═══██╗      ██╔══██╗██╔════╝██╔════╝██╔═══██╗████╗  ██║
+███████║██║   ██║   ██║   ██║   ██║█████╗██████╔╝█████╗  ██║     ██║   ██║██╔██╗ ██║
+██╔══██║██║   ██║   ██║   ██║   ██║╚════╝██╔══██╗██╔══╝  ██║     ██║   ██║██║╚██╗██║
+██║  ██║╚██████╔╝   ██║   ╚██████╔╝      ██║  ██║███████╗╚██████╗╚██████╔╝██║ ╚████║
+╚═╝  ╚═╝ ╚═════╝    ╚═╝    ╚═════╝       ╚═╝  ╚═╝╚══════╝ ╚═════╝ ╚═════╝ ╚═╝  ╚═══╝
+BANNER
+echo -e "${NC}"
+
+info "Mode:      $MODE"
+info "Interface: $IFACE"
+info "Session:   $SESSION_DIR"
+echo ""
+
+# ── resolve interface ─────────────────────────────────────────────────────────
+
+if [ "$IFACE" = "auto" ]; then
+    for candidate in eth0 wlan0 en0 enp1s0; do
+        if ip link show "$candidate" &>/dev/null && ip -4 addr show "$candidate" 2>/dev/null | grep -q inet; then
+            IFACE="$candidate"
+            break
+        fi
+    done
+    if [ "$IFACE" = "auto" ]; then
+        fail "No active interface found. Specify manually: auto-recon quick wlan0"
+        exit 1
+    fi
+fi
+
+OUR_IP=$(ip -4 addr show "$IFACE" 2>/dev/null | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | head -1 || echo "")
+SUBNET=$(echo "$OUR_IP" | sed 's/\.[0-9]*$/.0\/24/')
+GW=$(ip route show dev "$IFACE" 2>/dev/null | grep default | awk '{print $3}' | head -1 || echo "")
+
+if [ -z "$OUR_IP" ]; then
+    fail "No IP on $IFACE"
+    exit 1
+fi
+
+info "Local IP:  $OUR_IP"
+info "Subnet:    $SUBNET"
+[ -n "$GW" ] && info "Gateway:   $GW"
+echo ""
+
+# Set current op label for fleet beacon
+echo "auto-recon-${MODE}" > /tmp/zd-current-op 2>/dev/null || true
+
+# ── stealth prep ──────────────────────────────────────────────────────────────
+
+if [ "$MODE" = "stealth" ]; then
+    banner "STEALTH — MAC rotation + silence"
+    if command -v mac-rotate &>/dev/null; then
+        mac-rotate "$IFACE" 2>/dev/null && ok "MAC rotated" || warn "MAC rotate failed"
+    fi
+    SCAN_TIMING="T1"    # paranoid nmap timing
+    SLEEP_BASE=5        # randomize scan delays
+else
+    SCAN_TIMING="T3"
+    SLEEP_BASE=0
+fi
+
+# ── Phase 1: Passive WiFi survey ──────────────────────────────────────────────
+
+banner "PHASE 1 — Passive WiFi Survey"
+WIFI_LOG="${SESSION_DIR}/wifi_survey.log"
+
+if command -v wifi-survey-log &>/dev/null; then
+    info "Running WiFi survey (30s)..."
+    wifi-survey-log "$IFACE" 30 > "$WIFI_LOG" 2>&1 && {
+        AP_COUNT=$(grep -c "^AP:" "$WIFI_LOG" 2>/dev/null || echo 0)
+        ok "WiFi survey: ${AP_COUNT} APs found → $WIFI_LOG"
+    } || warn "WiFi survey failed or no monitor support"
+elif command -v iw &>/dev/null; then
+    info "Fallback: iw scan"
+    iw dev "$IFACE" scan 2>/dev/null > "$WIFI_LOG" && ok "iw scan saved" || warn "iw scan failed"
+else
+    warn "No WiFi survey tool available"
+fi
+
+[ "$SLEEP_BASE" -gt 0 ] && sleep $(( RANDOM % SLEEP_BASE + 1 ))
+
+# ── Phase 2: BLE scan (passive) ───────────────────────────────────────────────
+
+if [ "$MODE" != "passive" ] || true; then
+    banner "PHASE 2 — BLE Passive Scan"
+    BLE_LOG="${SESSION_DIR}/ble_scan.log"
+    if command -v hcitool &>/dev/null && hciconfig 2>/dev/null | grep -q "UP RUNNING"; then
+        info "BLE lescan 15s..."
+        timeout 15 hcitool lescan 2>/dev/null > "$BLE_LOG" && {
+            DEV_COUNT=$(grep -c "LE Scan" "$BLE_LOG" 2>/dev/null || wc -l < "$BLE_LOG")
+            ok "BLE scan: saved → $BLE_LOG"
+        } || warn "BLE scan ended (no devices or timeout)"
+    else
+        warn "Bluetooth not available or not up"
+    fi
+fi
+
+[ "$SLEEP_BASE" -gt 0 ] && sleep $(( RANDOM % SLEEP_BASE + 1 ))
+
+# ── Phase 3: ARP discovery (active) ──────────────────────────────────────────
+
+if [ "$MODE" != "passive" ] && [ "$MODE" != "stealth" ]; then
+    banner "PHASE 3 — ARP Network Discovery"
+    ARP_LOG="${SESSION_DIR}/arp_discovery.txt"
+    HOST_LOG="${SESSION_DIR}/live_hosts.txt"
+
+    if command -v arp-scan &>/dev/null; then
+        info "arp-scan $SUBNET..."
+        arp-scan -l -I "$IFACE" 2>/dev/null > "$ARP_LOG" && {
+            grep -oP '\d+\.\d+\.\d+\.\d+' "$ARP_LOG" | sort -u > "$HOST_LOG"
+            HOST_COUNT=$(wc -l < "$HOST_LOG")
+            ok "ARP scan: ${HOST_COUNT} hosts → $ARP_LOG"
+        } || warn "arp-scan failed"
+    elif command -v nmap &>/dev/null; then
+        info "nmap -sn $SUBNET (ping sweep)..."
+        nmap -sn --send-ip "$SUBNET" -oG "$ARP_LOG" 2>/dev/null && {
+            grep "Up$" "$ARP_LOG" | grep -oP '\d+\.\d+\.\d+\.\d+' > "$HOST_LOG" 2>/dev/null || true
+            HOST_COUNT=$(wc -l < "$HOST_LOG" 2>/dev/null || echo 0)
+            ok "Ping sweep: ${HOST_COUNT} hosts → $ARP_LOG"
+        } || warn "nmap ping sweep failed"
+    else
+        info "Fallback: arping gateway only"
+        [ -n "$GW" ] && {
+            arping -c 3 -I "$IFACE" "$GW" 2>/dev/null > "$ARP_LOG" && ok "Gateway alive" || warn "Gateway unreachable"
+        }
+    fi
+
+    [ "$SLEEP_BASE" -gt 0 ] && sleep $(( RANDOM % SLEEP_BASE + 2 ))
+fi
+
+# ── Phase 4: Port scan ────────────────────────────────────────────────────────
+
+if [ "$MODE" = "quick" ] || [ "$MODE" = "full" ]; then
+    banner "PHASE 4 — Port Scan"
+
+    if [ -f "${HOST_LOG:-}" ] && [ -s "$HOST_LOG" ]; then
+        SCAN_TARGETS="$HOST_LOG"
+        TARGET_FLAG="-iL"
+    else
+        SCAN_TARGETS="$SUBNET"
+        TARGET_FLAG=""
+    fi
+
+    NMAP_XML="${SESSION_DIR}/portscan.xml"
+    NMAP_NORM="${SESSION_DIR}/portscan.txt"
+
+    if command -v nmap &>/dev/null; then
+        if [ "$MODE" = "quick" ]; then
+            NMAP_FLAGS="-sV -$SCAN_TIMING --top-ports 1000 -oX $NMAP_XML -oN $NMAP_NORM"
+        else
+            NMAP_FLAGS="-sV -sC -$SCAN_TIMING -p- -oX $NMAP_XML -oN $NMAP_NORM"
+        fi
+
+        info "nmap scan ($MODE mode, timing ${SCAN_TIMING})..."
+        # shellcheck disable=SC2086
+        nmap $NMAP_FLAGS $TARGET_FLAG "$SCAN_TARGETS" 2>/dev/null && {
+            OPEN_PORTS=$(grep -c "open" "$NMAP_NORM" 2>/dev/null || echo 0)
+            ok "Port scan: ${OPEN_PORTS} open ports → $NMAP_NORM"
+        } || warn "nmap scan failed or no targets"
+
+        # Classify devices if tool available
+        if command -v device-classify &>/dev/null && [ -f "$NMAP_XML" ]; then
+            info "Classifying devices..."
+            device-classify "$NMAP_XML" > "${SESSION_DIR}/device_classes.txt" 2>/dev/null \
+                && ok "Device classification saved" || warn "Classification failed"
+        fi
+    else
+        warn "nmap not found — skipping port scan"
+    fi
+
+    [ "$SLEEP_BASE" -gt 0 ] && sleep $(( RANDOM % SLEEP_BASE + 2 ))
+fi
+
+# ── Phase 5: Vulnerability scan (full mode only) ──────────────────────────────
+
+if [ "$MODE" = "full" ]; then
+    banner "PHASE 5 — Vulnerability Scan"
+    VULN_LOG="${SESSION_DIR}/vuln_scan.txt"
+
+    if command -v net-vulnscan &>/dev/null && [ -f "${HOST_LOG:-}" ] && [ -s "$HOST_LOG" ]; then
+        info "Running vuln scan against live hosts..."
+        while IFS= read -r host; do
+            [ -z "$host" ] && continue
+            info "  vuln scan: $host"
+            net-vulnscan "$host" >> "$VULN_LOG" 2>&1 || warn "  vuln scan failed for $host"
+        done < "$HOST_LOG"
+        ok "Vuln scan complete → $VULN_LOG"
+    else
+        warn "net-vulnscan not available or no hosts discovered"
+    fi
+
+    [ "$SLEEP_BASE" -gt 0 ] && sleep $(( RANDOM % SLEEP_BASE + 3 ))
+fi
+
+# ── Phase 6: Threat intel enrichment (full mode only) ─────────────────────────
+
+if [ "$MODE" = "full" ]; then
+    banner "PHASE 6 — Threat Intel Enrichment"
+    INTEL_LOG="${SESSION_DIR}/threat_intel.txt"
+
+    if command -v threat-intel &>/dev/null && [ -f "${HOST_LOG:-}" ]; then
+        info "CVE/KEV lookup for discovered hosts..."
+        while IFS= read -r host; do
+            [ -z "$host" ] && continue
+            echo "=== $host ===" >> "$INTEL_LOG"
+            threat-intel "$host" >> "$INTEL_LOG" 2>&1 || true
+        done < "$HOST_LOG"
+        ok "Threat intel saved → $INTEL_LOG"
+    fi
+fi
+
+# ── Summary ───────────────────────────────────────────────────────────────────
+
+T_END=$(date +%s)
+ELAPSED=$(( T_END - T_START ))
+
+cat > "$SUMMARY" << EOF
+ZERO-DAY OS — Auto-Recon Summary
+=================================
+Date:       $(date)
+Mode:       $MODE
+Interface:  $IFACE
+IP:         $OUR_IP
+Subnet:     $SUBNET
+Duration:   ${ELAPSED}s
+
+Files:
+$(ls -lh "$SESSION_DIR" | tail -n +2)
+EOF
+
+# Organize into main loot
+loot-organize organize 2>/dev/null || true
+
+echo ""
+banner "RECON COMPLETE"
+ok "Session: $SESSION_DIR"
+ok "Duration: ${ELAPSED}s"
+echo ""
+echo -e "${CYAN}Files collected:${NC}"
+ls "$SESSION_DIR" | while read -r f; do
+    printf "  %-35s  %s\n" "$f" "$(du -sh "$SESSION_DIR/$f" 2>/dev/null | awk '{print $1}')"
+done
+echo ""
+
+# Reset current op
+echo "idle" > /tmp/zd-current-op 2>/dev/null || true
