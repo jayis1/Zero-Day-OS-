@@ -44,7 +44,7 @@ for script in kerberoast pass-spray privesc-check post-harvest; do
 done
 
 # System
-for script in engagement-clean wifi-autocrack zd-git-push; do
+for script in engagement-clean; do
     if [ -f "${PROJECT_ROOT}/scripts/system/${script}" ]; then
         install -m 755 "${PROJECT_ROOT}/scripts/system/${script}" "${BIN}/${script}"
         echo "[zeroday] Installed: ${script}"

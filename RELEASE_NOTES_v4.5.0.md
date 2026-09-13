@@ -179,20 +179,6 @@ All installs are best-effort (`2>/dev/null || echo deferred`) — missing Kali a
 
 ---
 
-### Git Push Integration
-
-`zd-git-push` — after any tool run, push results to GitHub on a new timestamped branch:
-
-```bash
-zd-git-push setup                          # set token + repo once
-zd-git-push "wardrive session 2026-09-13"  # commit + push loot + OS changes
-zd-git-push test                            # verify auth works
-```
-
-Branch naming: `zd/<label>/<YYYYMMDD-HHMMSS>`
-
----
-
 ## Also Includes (carried forward from v4.3.x)
 
 - `zeroday-comp` — Smithay 0.7 Wayland compositor, full protocol support, ~1.5MB
