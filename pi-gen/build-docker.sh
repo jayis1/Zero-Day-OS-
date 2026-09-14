@@ -152,7 +152,7 @@ time ${DOCKER} run \
   pi-gen \
   bash -e -o pipefail -c "
     mkdir -p /proc/sys/fs/binfmt_misc &&
-    mount binfmt_misc -t binfmt_misc /proc/sys/fs/binfmt_misc &&
+    (mount binfmt_misc -t binfmt_misc /proc/sys/fs/binfmt_misc 2>/dev/null || true) &&
     # Remove any stale qemu-aarch64 registration first
     echo -1 > /proc/sys/fs/binfmt_misc/qemu-aarch64 2>/dev/null || true &&
     # Register qemu-aarch64 with fix-binary flag (F) so chroot works

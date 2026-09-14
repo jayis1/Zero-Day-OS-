@@ -14,7 +14,7 @@ install -m 755 -d "${BIN}"
 echo "[zeroday] Installing ratatui TUI dashboards..."
 
 # Install zeroday-tui binaries (pre-built by cross-compile step)
-for bin in sys-tui net-tui loot-tui scan-tui; do
+for bin in sys-tui net-tui loot-tui scan-tui trail-tui wifi-tui bt-tui; do
     if [ -f "${TUI_DIR}/${bin}" ]; then
         install -m 755 "${TUI_DIR}/${bin}" "${BIN}/${bin}"
         SIZE=$(du -h "${TUI_DIR}/${bin}" | cut -f1)
@@ -37,4 +37,6 @@ echo "[zeroday] Ratatui TUI dashboards installed."
 echo "[zeroday]   sys-tui   — system monitor (CPU/RAM/battery/temp/processes/sparklines)"
 echo "[zeroday]   net-tui   — network dashboard (live nmap XML reader, host/port tables)"
 echo "[zeroday]   loot-tui  — loot browser (category tabs, file preview, cred highlights)"
-echo "[zeroday]   scan-tui  — live scan dashboard (nmap/ragnar-scan wrapper, findings timeline)"
+echo "[zeroday]   trail-tui — navigation overlay (breadcrumb trail, exit guidance, Overwatch threats)"
+echo "[zeroday]   wifi-tui  — WiFi dashboard (live scan, wardrive history, handshake/crack, attacks)"
+echo "[zeroday]   bt-tui    — Bluetooth dashboard (BT+BLE scan, GATT enum, device history, attacks)"

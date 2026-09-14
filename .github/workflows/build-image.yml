@@ -15,10 +15,10 @@ jobs:
   build:
     name: Build arm64 Image
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 360   # 6h — pi-gen arm64 under QEMU takes 3-4h
 
     permissions:
-      contents: write   # needed to upload release assets
+      contents: write
 
     steps:
 
@@ -54,69 +54,71 @@ jobs:
       - name: Verify arm64 emulation works
         run: docker run --rm --platform linux/arm64 arm64v8/alpine uname -m
 
+      - name: Install qemu-user-static on runner
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y qemu-user-static
+          which qemu-aarch64-static
+          ls -la /usr/bin/qemu-aarch64-static
+
       - name: Free disk space
         run: |
-          # GitHub runners have ~14GB free by default — images need ~12GB
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
                       /usr/local/.ghcup /opt/hostedtoolcache/CodeQL \
                       /usr/local/share/boost 2>/dev/null || true
           sudo docker image prune -af 2>/dev/null || true
           df -h /
 
-      - name: Build ZERO-DAY OS — Full image
-        id: build_full
-        run: |
-          cd pi-gen
-          # Ensure config is present (already committed to repo)
-          ls -la config
-          # Skip stage5 (desktop) — we don't need it
-          touch stage5/SKIP
-          # Run the Docker build (CONTINUE=0 = fresh build)
-          CONTINUE=0 ./build-docker.sh
-          # Find the output images
-          ls -lh deploy/
-          FULL=$(ls deploy/*full*.zip 2>/dev/null | head -1)
-          echo "FULL_ZIP=$FULL" >> $GITHUB_OUTPUT
+      - name: Cache apt packages (speeds up reruns)
+        uses: actions/cache@v4
+        with:
+          path: pi-gen/work/apt-cache
+          key: apt-cache-bookworm-arm64-${{ hashFiles('pi-gen/stage4/**/*-run.sh') }}
+          restore-keys: |
+            apt-cache-bookworm-arm64-
 
-      - name: Build ZERO-DAY OS — Lite image
-        id: build_lite
+      - name: Build ZERO-DAY OS image
+        id: build
         run: |
-          # Lite image was already produced by the same build run
           cd pi-gen
+
+          # Skip stage5 (desktop) — not needed for pentest OS
+          touch stage5/SKIP stage5/SKIP_IMAGES 2>/dev/null || true
+
+          # If apt cache dir exists from previous run, inject it
+          if [ -d work/apt-cache ]; then
+            echo "APT_PROXY=DIRECT" >> config
+            echo "Found cached apt packages: $(du -sh work/apt-cache)"
+          fi
+
+          # Fresh build (no leftover containers)
+          CONTINUE=0 PRESERVE_CONTAINER=0 ./build-docker.sh
+
+          ls -lh deploy/
+          FULL=$(ls deploy/*.zip 2>/dev/null | grep -v lite | head -1)
           LITE=$(ls deploy/*lite*.zip 2>/dev/null | head -1)
-          echo "LITE_ZIP=$LITE" >> $GITHUB_OUTPUT
+          [ -z "$LITE" ] && LITE=$(ls deploy/*.zip 2>/dev/null | tail -1)
+          echo "FULL_ZIP=$FULL" >> $GITHUB_OUTPUT
+          echo "LITE_ZIP=$LITE"  >> $GITHUB_OUTPUT
 
       - name: List deploy artifacts
         run: ls -lh pi-gen/deploy/
 
       - name: Upload full image to release
-        if: steps.build_full.outputs.FULL_ZIP != ''
-        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
+        main
         with:
           tag_name: ${{ steps.tag.outputs.TAG }}
-          files: ${{ steps.build_full.outputs.FULL_ZIP }}
+          files: ${{ steps.build.outputs.FULL_ZIP }}
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Upload lite image to release
-        if: steps.build_lite.outputs.LITE_ZIP != ''
-        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           tag_name: ${{ steps.tag.outputs.TAG }}
-          files: ${{ steps.build_lite.outputs.LITE_ZIP }}
+          files: ${{ steps.build.outputs.LITE_ZIP }}
           token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Upload full image as workflow artifact (backup)
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        main
         with:
-          name: zeroday-os-full-${{ steps.tag.outputs.DATE }}
-          path: pi-gen/deploy/*full*.zip
-          retention-days: 7
-          if-no-files-found: warn
-
-      - name: Upload lite image as workflow artifact (backup)
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: zeroday-os-lite-${{ steps.tag.outputs.DATE }}
-          path: pi-gen/deploy/*lite*.zip
+          name: zeroday-os-${{ steps.tag.outputs.DATE }}
+          path: pi-gen/deploy/*.zip
           retention-days: 7
           if-no-files-found: warn

@@ -21,6 +21,18 @@ path = "src/loot_tui.rs"
 name = "scan-tui"
 path = "src/scan_tui.rs"
 
+[[bin]]
+name = "trail-tui"
+path = "src/trail_tui.rs"
+
+[[bin]]
+name = "wifi-tui"
+path = "src/wifi_tui.rs"
+
+[[bin]]
+name = "bt-tui"
+path = "src/bt_tui.rs"
+
 [dependencies]
 ratatui      = { version = "0.30", features = ["crossterm"] }
 crossterm    = "0.28"
