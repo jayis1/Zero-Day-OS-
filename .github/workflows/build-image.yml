@@ -48,9 +48,15 @@ jobs:
       - name: Verify arm64 emulation works
         run: docker run --rm --platform linux/arm64 arm64v8/alpine uname -m
 
+      - name: Install qemu-user-static on runner
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y qemu-user-static
+          which qemu-aarch64-static
+          ls -la /usr/bin/qemu-aarch64-static
+
       - name: Free disk space
         run: |
-          # GitHub runners have ~14GB free by default — images need ~12GB
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
                       /usr/local/.ghcup /opt/hostedtoolcache/CodeQL \
                       /usr/local/share/boost 2>/dev/null || true
