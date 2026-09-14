@@ -23,7 +23,7 @@ jobs:
     steps:
 
       - name: Checkout repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           fetch-depth: 0
 
@@ -37,13 +37,19 @@ jobs:
           fi
           echo "DATE=$(date +%Y-%m-%d)" >> $GITHUB_OUTPUT
 
+      - name: Install host QEMU static binary
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends qemu-user-static
+          command -v qemu-aarch64-static
+
       - name: Set up QEMU (arm64 emulation)
-        uses: docker/setup-qemu-action@v3
+        uses: docker/setup-qemu-action@1f40c72289eff860ee54a304f1438e3cff362e0a # v4
         with:
           platforms: arm64
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
 
       - name: Verify arm64 emulation works
         run: docker run --rm --platform linux/arm64 arm64v8/alpine uname -m
@@ -99,23 +105,18 @@ jobs:
         run: ls -lh pi-gen/deploy/
 
       - name: Upload full image to release
-        if: steps.build.outputs.FULL_ZIP != ''
-        uses: softprops/action-gh-release@v2
+        main
         with:
           tag_name: ${{ steps.tag.outputs.TAG }}
           files: ${{ steps.build.outputs.FULL_ZIP }}
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Upload lite image to release
-        if: steps.build.outputs.LITE_ZIP != ''
-        uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.tag.outputs.TAG }}
           files: ${{ steps.build.outputs.LITE_ZIP }}
           token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Upload images as workflow artifacts (backup)
-        uses: actions/upload-artifact@v4
+        main
         with:
           name: zeroday-os-${{ steps.tag.outputs.DATE }}
           path: pi-gen/deploy/*.zip
