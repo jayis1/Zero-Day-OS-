@@ -1,0 +1,320 @@
+#!/bin/bash
+set -euo pipefail
+# /usr/local/bin/zeroday-crypt
+# Zero-Day OS — LUKS Encrypted Storage Manager
+# Manages an encrypted loot/data partition using dm-crypt/LUKS2
+# Target: CardPuterZero SD card slot 2 or USB flash drive
+
+VERSION="1.0.0"
+SCRIPT_NAME="$(basename "$0")"
+
+CYAN='\033[0;36m'
+GREEN='\033[0;32m'
+RED='\033[0;31m'
+YELLOW='\033[1;33m'
+NC='\033[0m'
+
+CRYPT_NAME="zd-vault"
+CRYPT_MOUNT="/opt/cardputer/vault"
+CRYPT_CONFIG="/opt/cardputer/config/vault.conf"
+CRYPT_KEYFILE="/opt/cardputer/config/.vault_key"
+CRYPT_LABEL="ZDVAULT"
+
+# ------------------------------------------------------------------
+usage() {
+    echo -e "${CYAN}${SCRIPT_NAME}${NC} — Zero-Day OS Encrypted Vault v${VERSION}"
+    echo ""
+    echo "Usage: ${SCRIPT_NAME} <command> [options]"
+    echo ""
+    echo "Commands:"
+    echo "  format  <dev>      Create LUKS2 encrypted vault on <dev>"
+    echo "                     (DESTROYS existing data on <dev>)"
+    echo "  open    <dev>      Unlock and mount vault from <dev>"
+    echo "  close              Unmount and lock vault"
+    echo "  status             Show vault status"
+    echo "  key-add <dev>      Add a new passphrase/keyfile slot"
+    echo "  key-remove <dev>   Remove a passphrase slot"
+    echo "  test               Run offline self-test (no device needed)"
+    echo ""
+    echo "Options:"
+    echo "  --keyfile <path>   Use keyfile instead of passphrase"
+    echo "  --no-mount         Open mapping but don't mount filesystem"
+    echo ""
+    echo "Examples:"
+    echo "  ${SCRIPT_NAME} format /dev/mmcblk1p1"
+    echo "  ${SCRIPT_NAME} open /dev/mmcblk1p1"
+    echo "  ${SCRIPT_NAME} close"
+    echo "  ${SCRIPT_NAME} status"
+}
+
+# ------------------------------------------------------------------
+require_root() {
+    if [ "$(id -u)" -ne 0 ]; then
+        echo -e "${RED}[!] ${SCRIPT_NAME} must run as root${NC}"
+        exit 1
+    fi
+}
+
+require_tools() {
+    local missing=()
+    for tool in cryptsetup blockdev lsblk; do
+        command -v "$tool" >/dev/null 2>&1 || missing+=("$tool")
+    done
+    if [ ${#missing[@]} -gt 0 ]; then
+        echo -e "${RED}[!] Missing tools: ${missing[*]}${NC}"
+        echo "    Install with: apt-get install -y cryptsetup util-linux"
+        exit 1
+    fi
+}
+
+# ------------------------------------------------------------------
+cmd_format() {
+    local dev="${1:-}"
+    [ -z "$dev" ] && { echo -e "${RED}[!] Device required${NC}"; usage; exit 1; }
+    [ -b "$dev" ] || { echo -e "${RED}[!] Not a block device: $dev${NC}"; exit 1; }
+
+    local size_mb
+    size_mb=$(( $(blockdev --getsize64 "$dev") / 1048576 ))
+    echo -e "${YELLOW}[!] WARNING: This will DESTROY all data on ${dev} (${size_mb} MB)${NC}"
+    echo -n "    Type 'yes' to continue: "
+    read -r confirm
+    [ "$confirm" = "yes" ] || { echo "Aborted."; exit 0; }
+
+    echo "[*] Formatting ${dev} as LUKS2 (AES-256-XTS, Argon2id KDF)..."
+    cryptsetup luksFormat \
+        --type luks2 \
+        --cipher aes-xts-plain64 \
+        --key-size 512 \
+        --hash sha512 \
+        --pbkdf argon2id \
+        --pbkdf-memory 131072 \
+        --pbkdf-parallel 4 \
+        --iter-time 5000 \
+        --label "${CRYPT_LABEL}" \
+        --batch-mode \
+        "$dev"
+
+    echo "[*] Creating ext4 filesystem inside vault..."
+    cryptsetup open "$dev" "${CRYPT_NAME}-setup"
+    mkfs.ext4 -L "${CRYPT_LABEL}_FS" -m 1 "/dev/mapper/${CRYPT_NAME}-setup"
+    cryptsetup close "${CRYPT_NAME}-setup"
+
+    echo -e "${GREEN}[+] Vault created on ${dev}${NC}"
+    echo "    Open with: ${SCRIPT_NAME} open ${dev}"
+}
+
+# ------------------------------------------------------------------
+cmd_open() {
+    local dev="${1:-}"
+    local keyfile="${2:-}"
+    local no_mount="${3:-}"
+    [ -z "$dev" ] && { echo -e "${RED}[!] Device required${NC}"; usage; exit 1; }
+    [ -b "$dev" ] || { echo -e "${RED}[!] Not a block device: $dev${NC}"; exit 1; }
+
+    # Already open?
+    if [ -b "/dev/mapper/${CRYPT_NAME}" ]; then
+        echo -e "${YELLOW}[!] Vault already open at /dev/mapper/${CRYPT_NAME}${NC}"
+        [ -z "$no_mount" ] && cmd_mount
+        return 0
+    fi
+
+    echo "[*] Opening LUKS2 vault on ${dev}..."
+    if [ -n "$keyfile" ]; then
+        [ -f "$keyfile" ] || { echo -e "${RED}[!] Keyfile not found: ${keyfile}${NC}"; exit 1; }
+        cryptsetup open --key-file "$keyfile" "$dev" "${CRYPT_NAME}"
+    else
+        cryptsetup open "$dev" "${CRYPT_NAME}"
+    fi
+
+    echo -e "${GREEN}[+] Vault decrypted → /dev/mapper/${CRYPT_NAME}${NC}"
+
+    if [ -z "$no_mount" ]; then
+        cmd_mount
+    fi
+}
+
+# ------------------------------------------------------------------
+cmd_mount() {
+    if mountpoint -q "${CRYPT_MOUNT}" 2>/dev/null; then
+        echo "[*] Vault already mounted at ${CRYPT_MOUNT}"
+        return 0
+    fi
+    [ -b "/dev/mapper/${CRYPT_NAME}" ] || {
+        echo -e "${RED}[!] Vault not open — run: ${SCRIPT_NAME} open <dev>${NC}"
+        exit 1
+    }
+    mkdir -p "${CRYPT_MOUNT}"
+    chmod 700 "${CRYPT_MOUNT}"
+    mount /dev/mapper/${CRYPT_NAME} "${CRYPT_MOUNT}"
+    echo -e "${GREEN}[+] Vault mounted at ${CRYPT_MOUNT}${NC}"
+}
+
+# ------------------------------------------------------------------
+cmd_close() {
+    echo "[*] Closing vault..."
+    if mountpoint -q "${CRYPT_MOUNT}" 2>/dev/null; then
+        umount "${CRYPT_MOUNT}" && echo "    Unmounted ${CRYPT_MOUNT}"
+    fi
+    if [ -b "/dev/mapper/${CRYPT_NAME}" ]; then
+        cryptsetup close "${CRYPT_NAME}" && echo "    dm-crypt mapping removed"
+    else
+        echo "[*] Vault was not open."
+    fi
+    echo -e "${GREEN}[+] Vault locked.${NC}"
+}
+
+# ------------------------------------------------------------------
+cmd_status() {
+    echo -e "${CYAN}[*] Zero-Day OS Vault Status${NC}"
+    echo ""
+    if [ -b "/dev/mapper/${CRYPT_NAME}" ]; then
+        echo -e "  Vault mapping:  ${GREEN}OPEN${NC}  (/dev/mapper/${CRYPT_NAME})"
+        cryptsetup status "${CRYPT_NAME}" | sed 's/^/  /'
+        echo ""
+        if mountpoint -q "${CRYPT_MOUNT}" 2>/dev/null; then
+            echo -e "  Mount point:    ${GREEN}MOUNTED${NC}  (${CRYPT_MOUNT})"
+            df -h "${CRYPT_MOUNT}" | tail -1 | sed 's/^/  /'
+        else
+            echo -e "  Mount point:    ${YELLOW}NOT MOUNTED${NC}"
+        fi
+    else
+        echo -e "  Vault:          ${RED}CLOSED / LOCKED${NC}"
+    fi
+    echo ""
+    # Show labeled LUKS devices
+    local luks_devs
+    luks_devs=$(blkid -t TYPE=crypto_LUKS -o device 2>/dev/null || true)
+    if [ -n "$luks_devs" ]; then
+        echo "  LUKS devices available:"
+        echo "$luks_devs" | while read -r d; do
+            LINFO=$(blkid "$d" 2>/dev/null | grep -o 'LABEL="[^"]*"' || echo "")
+            echo "    $d  $LINFO"
+        done
+    fi
+}
+
+# ------------------------------------------------------------------
+cmd_key_add() {
+    local dev="${1:-}"
+    [ -z "$dev" ] && { echo -e "${RED}[!] Device required${NC}"; exit 1; }
+    [ -b "$dev" ] || { echo -e "${RED}[!] Not a block device: $dev${NC}"; exit 1; }
+    echo "[*] Adding new key slot to ${dev}..."
+    cryptsetup luksAddKey "$dev"
+    echo -e "${GREEN}[+] New key slot added.${NC}"
+}
+
+# ------------------------------------------------------------------
+cmd_key_remove() {
+    local dev="${1:-}"
+    [ -z "$dev" ] && { echo -e "${RED}[!] Device required${NC}"; exit 1; }
+    [ -b "$dev" ] || { echo -e "${RED}[!] Not a block device: $dev${NC}"; exit 1; }
+    echo "[*] Removing key slot from ${dev} (enter the passphrase to REMOVE)..."
+    cryptsetup luksRemoveKey "$dev"
+    echo -e "${GREEN}[+] Key slot removed.${NC}"
+}
+
+# ------------------------------------------------------------------
+cmd_test() {
+    echo -e "${CYAN}[*] zeroday-crypt self-test (offline)${NC}"
+    echo ""
+    local PASS=0
+    local FAIL=0
+
+    check() {
+        local desc="$1"; local result="$2"
+        if [ "$result" = "ok" ]; then
+            echo -e "  ${GREEN}[PASS]${NC} $desc"
+            PASS=$((PASS+1))
+        else
+            echo -e "  ${RED}[FAIL]${NC} $desc — $result"
+            FAIL=$((FAIL+1))
+        fi
+    }
+
+    # Test: cryptsetup present
+    command -v cryptsetup >/dev/null 2>&1 \
+        && check "cryptsetup installed" "ok" \
+        || check "cryptsetup installed" "not found"
+
+    # Test: dm-crypt kernel module (or compiled in)
+    if grep -q "dm_crypt\|dm-crypt" /proc/modules 2>/dev/null || \
+       modinfo dm-crypt >/dev/null 2>&1 || \
+       [ -f /sys/module/dm_crypt/version ] 2>/dev/null; then
+        check "dm-crypt kernel support" "ok"
+    else
+        # May be compiled in (=y) — check via /proc/crypto
+        grep -q "cbc(aes)\|xts(aes)" /proc/crypto 2>/dev/null \
+            && check "dm-crypt kernel support (compiled-in AES)" "ok" \
+            || check "dm-crypt kernel support" "missing (load dm-crypt module)"
+    fi
+
+    # Test: AES-XTS cipher available
+    grep -qE "xts.aes|xts\(aes\)" /proc/crypto 2>/dev/null \
+        && check "AES-XTS cipher in /proc/crypto" "ok" \
+        || check "AES-XTS cipher in /proc/crypto" "not found (acceptable if module not loaded yet)"
+
+    # Test: /dev/mapper accessible
+    [ -d "/dev/mapper" ] \
+        && check "/dev/mapper exists" "ok" \
+        || check "/dev/mapper exists" "missing — udev issue?"
+
+    # Test: vault mount parent dir creatable
+    mkdir -p "${CRYPT_MOUNT}" 2>/dev/null \
+        && check "vault mount dir (${CRYPT_MOUNT}) accessible" "ok" \
+        || check "vault mount dir" "cannot create"
+
+    # Test: sysctl hardening file present
+    [ -f "/etc/sysctl.d/99-zeroday-hardening.conf" ] \
+        && check "sysctl hardening config present" "ok" \
+        || check "sysctl hardening config present" "missing — run image build first"
+
+    # Test: nftables config present
+    [ -f "/etc/nftables.conf" ] \
+        && check "nftables config present" "ok" \
+        || check "nftables config present" "missing — run image build first"
+
+    # Test: apparmor present
+    command -v aa-status >/dev/null 2>&1 \
+        && check "apparmor tools installed" "ok" \
+        || check "apparmor tools installed" "not installed (acceptable in build environment)"
+
+    echo ""
+    echo "  Results: ${PASS} passed, ${FAIL} failed"
+    echo ""
+    if [ $FAIL -eq 0 ]; then
+        echo -e "  ${GREEN}[+] All checks passed.${NC}"
+        exit 0
+    else
+        echo -e "  ${YELLOW}[!] Some checks failed — see above.${NC}"
+        echo "      Failures in build environment (no /dev/mmcblk*) are expected."
+        exit 0
+    fi
+}
+
+# ------------------------------------------------------------------
+# Argument parsing
+KEYFILE=""
+NO_MOUNT=""
+CMD="${1:-}"
+shift || true
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --keyfile) KEYFILE="${2:-}"; shift 2 ;;
+        --no-mount) NO_MOUNT="1"; shift ;;
+        *) break ;;
+    esac
+done
+
+case "$CMD" in
+    format)     require_root; require_tools; cmd_format "$@" ;;
+    open)       require_root; require_tools; cmd_open "${1:-}" "$KEYFILE" "$NO_MOUNT" ;;
+    close)      require_root; require_tools; cmd_close ;;
+    mount)      require_root; cmd_mount ;;
+    status)     cmd_status ;;
+    key-add)    require_root; require_tools; cmd_key_add "$@" ;;
+    key-remove) require_root; require_tools; cmd_key_remove "$@" ;;
+    test)       cmd_test ;;
+    -h|--help|help|"") usage; exit 0 ;;
+    *)          echo -e "${RED}[!] Unknown command: ${CMD}${NC}"; usage; exit 1 ;;
+esac

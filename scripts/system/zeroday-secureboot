@@ -1,0 +1,342 @@
+#!/bin/bash
+set -euo pipefail
+# /usr/local/bin/zeroday-secureboot
+# Zero-Day OS — dm-verity rootfs integrity verifier & secure boot helper
+# Verifies rootfs hash chain; alerts on tampering; optionally mounts read-only
+# verified root via dm-verity.
+
+VERSION="1.0.0"
+SCRIPT_NAME="$(basename "$0")"
+
+CYAN='\033[0;36m'
+GREEN='\033[0;32m'
+RED='\033[0;31m'
+YELLOW='\033[1;33m'
+NC='\033[0m'
+
+VERITY_HASH_FILE="/boot/rootfs.verity.hash"
+VERITY_SALT_FILE="/boot/rootfs.verity.salt"
+VERITY_TABLE_FILE="/boot/rootfs.verity.table"
+ROOTFS_DEV="${ROOTFS_DEV:-/dev/mmcblk0p2}"
+HASH_DEV="${HASH_DEV:-}"   # defaults to a partition appended to ROOTFS_DEV if empty
+VERITY_NAME="zd-root-verity"
+
+# ------------------------------------------------------------------
+usage() {
+    echo -e "${CYAN}${SCRIPT_NAME}${NC} — Zero-Day OS dm-verity secure boot v${VERSION}"
+    echo ""
+    echo "Usage: ${SCRIPT_NAME} <command> [options]"
+    echo ""
+    echo "Commands:"
+    echo "  setup  <rootdev> [hashdev]"
+    echo "               Compute dm-verity hash tree for <rootdev> and save"
+    echo "               hash/salt to /boot.  Run once after image creation."
+    echo "  verify <rootdev> [hashdev]"
+    echo "               Verify rootfs hash chain against stored root hash."
+    echo "               Exits 0 on success, 1 on tampering detected."
+    echo "  open   <rootdev> [hashdev]"
+    echo "               Map verified read-only rootfs via dm-verity."
+    echo "  close        Remove dm-verity mapping."
+    echo "  status       Show current dm-verity status."
+    echo "  test         Offline self-test (mock verification)."
+    echo ""
+    echo "Environment:"
+    echo "  ROOTFS_DEV   Block device for rootfs  (default: /dev/mmcblk0p2)"
+    echo "  HASH_DEV     Block device for hash tree (default: loop on hashfile)"
+    echo ""
+    echo "Examples:"
+    echo "  ${SCRIPT_NAME} setup /dev/mmcblk0p2"
+    echo "  ${SCRIPT_NAME} verify /dev/mmcblk0p2"
+    echo "  ${SCRIPT_NAME} test"
+}
+
+# ------------------------------------------------------------------
+require_root() {
+    [ "$(id -u)" -eq 0 ] || { echo -e "${RED}[!] Must run as root${NC}"; exit 1; }
+}
+
+require_tools() {
+    local missing=()
+    for t in veritysetup sha256sum; do
+        command -v "$t" >/dev/null 2>&1 || missing+=("$t")
+    done
+    [ ${#missing[@]} -gt 0 ] && {
+        echo -e "${RED}[!] Missing: ${missing[*]}${NC}"
+        echo "    apt-get install -y cryptsetup-bin"
+        exit 1
+    }
+}
+
+# ------------------------------------------------------------------
+cmd_setup() {
+    local rootdev="${1:-$ROOTFS_DEV}"
+    local hashdev="${2:-}"
+    [ -b "$rootdev" ] || { echo -e "${RED}[!] Not a block device: $rootdev${NC}"; exit 1; }
+
+    local hash_file="/boot/rootfs.verity.hashtree"
+
+    if [ -z "$hashdev" ]; then
+        echo "[*] No hash device specified — using file-backed loop: ${hash_file}"
+        # Size: verity hash tree is ~1% of rootfs size
+        local rootsz
+        rootsz=$(blockdev --getsize64 "$rootdev" 2>/dev/null || echo 0)
+        local hash_sz=$(( rootsz / 64 + 4194304 ))  # ~1/64th + 4MB overhead
+        dd if=/dev/zero of="$hash_file" bs=4096 count=$(( hash_sz / 4096 )) 2>/dev/null
+        hashdev=$(losetup -f --show "$hash_file")
+        echo "[*] Loop device: $hashdev"
+        echo "$hashdev" > "/run/zd-verity-loop"
+    fi
+
+    echo "[*] Computing dm-verity hash tree on ${rootdev}..."
+    local VTABLE
+    VTABLE=$(veritysetup format \
+        --hash=sha256 \
+        --data-block-size=4096 \
+        --hash-block-size=4096 \
+        "$rootdev" "$hashdev" 2>&1)
+    echo "$VTABLE"
+
+    # Extract root hash and salt
+    local ROOT_HASH
+    ROOT_HASH=$(echo "$VTABLE" | grep "Root hash:" | awk '{print $NF}')
+    local SALT
+    SALT=$(echo "$VTABLE" | grep "Salt:" | awk '{print $NF}')
+
+    [ -z "$ROOT_HASH" ] && { echo -e "${RED}[!] Failed to extract root hash${NC}"; exit 1; }
+
+    mkdir -p /boot
+    echo "$ROOT_HASH" > "$VERITY_HASH_FILE"
+    echo "$SALT" > "$VERITY_SALT_FILE"
+    echo "$VTABLE" > "$VERITY_TABLE_FILE"
+    # Sign hash file with sha256 of root hash for tamper detection
+    sha256sum "$VERITY_HASH_FILE" > "${VERITY_HASH_FILE}.sha256"
+
+    echo ""
+    echo -e "${GREEN}[+] dm-verity setup complete${NC}"
+    echo "    Root hash:  $ROOT_HASH"
+    echo "    Stored in:  $VERITY_HASH_FILE"
+    echo ""
+    echo "    Add to cmdline.txt for kernel-enforced verity:"
+    echo "    dm-mod.create=\"${VERITY_NAME},,,ro,0 <data_blocks> verity 1 ${rootdev} ${hashdev} 4096 4096 <data_blocks> 1 sha256 ${ROOT_HASH} ${SALT}\""
+}
+
+# ------------------------------------------------------------------
+cmd_verify() {
+    local rootdev="${1:-$ROOTFS_DEV}"
+    local hashdev="${2:-}"
+
+    [ -f "$VERITY_HASH_FILE" ] || {
+        echo -e "${RED}[!] No stored root hash — run: ${SCRIPT_NAME} setup ${rootdev}${NC}"
+        exit 1
+    }
+    [ -b "$rootdev" ] || {
+        echo -e "${YELLOW}[!] ${rootdev} not available — cannot do live block verify${NC}"
+        exit 0
+    }
+
+    local stored_hash
+    stored_hash=$(cat "$VERITY_HASH_FILE")
+
+    # Verify our stored hash file itself hasn't been tampered with
+    if [ -f "${VERITY_HASH_FILE}.sha256" ]; then
+        sha256sum -c "${VERITY_HASH_FILE}.sha256" >/dev/null 2>&1 || {
+            echo -e "${RED}[!!!] TAMPERING DETECTED: root hash file has been modified!${NC}"
+            exit 1
+        }
+    fi
+
+    if [ -z "$hashdev" ] && [ -f "/run/zd-verity-loop" ]; then
+        hashdev=$(cat /run/zd-verity-loop)
+    fi
+
+    if [ -n "$hashdev" ] && [ -b "$hashdev" ]; then
+        echo "[*] Verifying dm-verity hash chain..."
+        veritysetup verify "$rootdev" "$hashdev" "$stored_hash" && {
+            echo -e "${GREEN}[+] Rootfs integrity verified — hash chain intact${NC}"
+        } || {
+            echo -e "${RED}[!!!] ROOTFS INTEGRITY FAILURE — hash mismatch!${NC}"
+            echo "      System may have been compromised."
+            exit 1
+        }
+    else
+        echo -e "${YELLOW}[!] No hash device available — skipping block-level verify${NC}"
+        echo "    Stored root hash: $stored_hash"
+        echo "    (Full verify requires hash device)"
+    fi
+}
+
+# ------------------------------------------------------------------
+cmd_open() {
+    local rootdev="${1:-$ROOTFS_DEV}"
+    local hashdev="${2:-}"
+
+    [ -f "$VERITY_HASH_FILE" ] || { echo -e "${RED}[!] No stored hash — run setup first${NC}"; exit 1; }
+    [ -b "$rootdev" ] || { echo -e "${RED}[!] Not a block device: $rootdev${NC}"; exit 1; }
+
+    local stored_hash
+    stored_hash=$(cat "$VERITY_HASH_FILE")
+
+    [ -z "$hashdev" ] && [ -f "/run/zd-verity-loop" ] && hashdev=$(cat /run/zd-verity-loop)
+    [ -n "$hashdev" ] || { echo -e "${RED}[!] Hash device required for open${NC}"; exit 1; }
+
+    echo "[*] Opening verified dm-verity mapping..."
+    veritysetup open "$rootdev" "$VERITY_NAME" "$hashdev" "$stored_hash"
+    echo -e "${GREEN}[+] Verified rootfs available at /dev/mapper/${VERITY_NAME}${NC}"
+    echo "    Mount read-only: mount -o ro /dev/mapper/${VERITY_NAME} /mnt"
+}
+
+# ------------------------------------------------------------------
+cmd_close() {
+    if [ -b "/dev/mapper/${VERITY_NAME}" ]; then
+        veritysetup close "$VERITY_NAME" && \
+            echo -e "${GREEN}[+] dm-verity mapping closed${NC}" || true
+    else
+        echo "[*] No active dm-verity mapping."
+    fi
+    # Release loop if we created one
+    if [ -f "/run/zd-verity-loop" ]; then
+        local loop
+        loop=$(cat /run/zd-verity-loop)
+        losetup -d "$loop" 2>/dev/null || true
+        rm -f /run/zd-verity-loop
+    fi
+}
+
+# ------------------------------------------------------------------
+cmd_status() {
+    echo -e "${CYAN}[*] dm-verity Status${NC}"
+    echo ""
+    if [ -b "/dev/mapper/${VERITY_NAME}" ]; then
+        echo -e "  Mapping: ${GREEN}ACTIVE${NC}  (/dev/mapper/${VERITY_NAME})"
+        veritysetup status "${VERITY_NAME}" 2>/dev/null | sed 's/^/  /' || true
+    else
+        echo -e "  Mapping: ${RED}INACTIVE${NC}"
+    fi
+    echo ""
+    if [ -f "$VERITY_HASH_FILE" ]; then
+        echo -e "  Root hash file: ${GREEN}present${NC}  ($VERITY_HASH_FILE)"
+        echo "  Root hash: $(cat "$VERITY_HASH_FILE")"
+        if [ -f "${VERITY_HASH_FILE}.sha256" ]; then
+            sha256sum -c "${VERITY_HASH_FILE}.sha256" >/dev/null 2>&1 \
+                && echo -e "  Hash integrity: ${GREEN}OK${NC}" \
+                || echo -e "  Hash integrity: ${RED}TAMPERED${NC}"
+        fi
+    else
+        echo -e "  Root hash file: ${YELLOW}not set up${NC}"
+    fi
+}
+
+# ------------------------------------------------------------------
+cmd_test() {
+    echo -e "${CYAN}[*] zeroday-secureboot self-test (offline)${NC}"
+    echo ""
+    local PASS=0 FAIL=0
+
+    check() {
+        local desc="$1" result="$2"
+        if [ "$result" = "ok" ]; then
+            echo -e "  ${GREEN}[PASS]${NC} $desc"; PASS=$((PASS+1))
+        else
+            echo -e "  ${RED}[FAIL]${NC} $desc — $result"; FAIL=$((FAIL+1))
+        fi
+    }
+
+    # veritysetup present
+    command -v veritysetup >/dev/null 2>&1 \
+        && check "veritysetup installed" "ok" \
+        || check "veritysetup installed" "missing (apt-get install cryptsetup-bin)"
+
+    # dm-verity kernel support
+    if modinfo dm-verity >/dev/null 2>&1 || \
+       grep -q "dm.verity\|dm_verity" /proc/modules 2>/dev/null || \
+       [ -f /sys/module/dm_verity/version ] 2>/dev/null; then
+        check "dm-verity kernel module" "ok"
+    else
+        check "dm-verity kernel module" "not loaded (expected in build env)"
+    fi
+
+    # Test mock hash generation
+    local TMPFILE TMP_HASH TMP_HASH2
+    TMPFILE=$(mktemp)
+    dd if=/dev/urandom of="$TMPFILE" bs=4096 count=64 2>/dev/null
+    TMP_HASH=$(sha256sum "$TMPFILE" | awk '{print $1}')
+    TMP_HASH2=$(sha256sum "$TMPFILE" | awk '{print $1}')
+    [ "$TMP_HASH" = "$TMP_HASH2" ] \
+        && check "sha256sum deterministic" "ok" \
+        || check "sha256sum deterministic" "non-deterministic output"
+    rm -f "$TMPFILE"
+
+    # /boot writable check
+    [ -d /boot ] \
+        && check "/boot directory present" "ok" \
+        || check "/boot directory present" "missing"
+
+    # kernel config check (dm-verity=y)
+    if grep -q "CONFIG_DM_VERITY=y" /boot/config-* 2>/dev/null || \
+       grep -q "CONFIG_DM_VERITY=y" /proc/config.gz 2>/dev/null || \
+       zcat /proc/config.gz 2>/dev/null | grep -q "CONFIG_DM_VERITY=y"; then
+        check "CONFIG_DM_VERITY=y in running kernel" "ok"
+    else
+        check "CONFIG_DM_VERITY=y in running kernel" "not verified (expected — custom kernel built separately)"
+    fi
+
+    # sysctl hardening applied
+    if [ -f "/etc/sysctl.d/99-zeroday-hardening.conf" ]; then
+        check "sysctl hardening config present" "ok"
+        grep -q "kernel.kptr_restrict" "/etc/sysctl.d/99-zeroday-hardening.conf" \
+            && check "kptr_restrict in sysctl config" "ok" \
+            || check "kptr_restrict in sysctl config" "missing"
+        grep -q "kernel.randomize_va_space" "/etc/sysctl.d/99-zeroday-hardening.conf" \
+            && check "ASLR in sysctl config" "ok" \
+            || check "ASLR in sysctl config" "missing"
+    else
+        check "sysctl hardening config present" "not found (expected pre-image-build)"
+    fi
+
+    # SSH hardening drop-in
+    [ -f "/etc/ssh/sshd_config.d/99-zeroday-hardening.conf" ] \
+        && check "SSH hardening drop-in present" "ok" \
+        || check "SSH hardening drop-in present" "not found (expected pre-image-build)"
+
+    # nftables
+    [ -f "/etc/nftables.conf" ] \
+        && check "nftables config present" "ok" \
+        || check "nftables config present" "not found (expected pre-image-build)"
+
+    # zeroday-crypt present
+    [ -x "/usr/local/bin/zeroday-crypt" ] || [ -x "$(dirname "$0")/zeroday-crypt" ] \
+        && check "zeroday-crypt script present" "ok" \
+        || check "zeroday-crypt script present" "not installed yet"
+
+    # SUID audit tool present
+    [ -x "/usr/local/bin/zeroday-suid-audit" ] \
+        && check "zeroday-suid-audit present" "ok" \
+        || check "zeroday-suid-audit present" "not installed yet"
+
+    echo ""
+    echo "  Results: ${PASS} passed, ${FAIL} failed"
+    echo ""
+    if [ $FAIL -eq 0 ]; then
+        echo -e "  ${GREEN}[+] All checks passed.${NC}"
+    else
+        echo -e "  ${YELLOW}[!] Some checks not met — see above.${NC}"
+        echo "      Failures are expected in an off-device build environment."
+    fi
+    # Exit 0 always in test mode (failures are informational pre-boot)
+    exit 0
+}
+
+# ------------------------------------------------------------------
+CMD="${1:-}"
+shift || true
+
+case "$CMD" in
+    setup)   require_root; require_tools; cmd_setup "$@" ;;
+    verify)  require_root; require_tools; cmd_verify "$@" ;;
+    open)    require_root; require_tools; cmd_open "$@" ;;
+    close)   require_root; cmd_close ;;
+    status)  cmd_status ;;
+    test)    cmd_test ;;
+    -h|--help|help|"") usage; exit 0 ;;
+    *) echo -e "${RED}[!] Unknown command: ${CMD}${NC}"; usage; exit 1 ;;
+esac

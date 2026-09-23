@@ -1,0 +1,255 @@
+#!/bin/bash
+set -euo pipefail
+# /usr/local/bin/zeroday-security-check
+# Zero-Day OS — Security validation suite
+# Runs a full battery of security checks; exit 0 = all pass/warn, 1 = critical fail
+# Supports --json, --verify, --mock flags (parallel to zeroday-boottime)
+
+VERSION="1.0.0"
+
+CYAN='\033[0;36m'
+GREEN='\033[0;32m'
+RED='\033[0;31m'
+YELLOW='\033[1;33m'
+NC='\033[0m'
+
+MOCK=0
+JSON=0
+VERIFY=0
+STRICT=0
+FAIL_COUNT=0
+WARN_COUNT=0
+PASS_COUNT=0
+declare -a RESULTS=()
+
+# ------------------------------------------------------------------
+usage() {
+    echo "zeroday-security-check v${VERSION} — Zero-Day OS Security Validation"
+    echo ""
+    echo "Usage: zeroday-security-check [--mock] [--json] [--verify] [--strict]"
+    echo ""
+    echo "  --mock    Simulate results without real hardware checks"
+    echo "  --json    Output results as JSON"
+    echo "  --verify  Exit 0 only if all checks pass (or warn in non-strict)"
+    echo "  --strict  Treat warnings as failures (for --verify)"
+    echo ""
+    echo "Exit codes (with --verify): 0=pass, 1=fail/critical"
+}
+
+parse_args() {
+    for arg in "$@"; do
+        case "$arg" in
+            --mock)   MOCK=1 ;;
+            --json)   JSON=1 ;;
+            --verify) VERIFY=1 ;;
+            --strict) STRICT=1 ;;
+            -h|--help) usage; exit 0 ;;
+        esac
+    done
+}
+
+# ------------------------------------------------------------------
+record() {
+    local name="$1" status="$2" value="$3" detail="${4:-}"
+    RESULTS+=("{\"check\":\"$name\",\"status\":\"$status\",\"value\":\"$value\",\"detail\":\"$detail\"}")
+    case "$status" in
+        PASS) PASS_COUNT=$((PASS_COUNT+1)) ;;
+        WARN) WARN_COUNT=$((WARN_COUNT+1)) ;;
+        FAIL|CRIT) FAIL_COUNT=$((FAIL_COUNT+1)) ;;
+    esac
+    if [ $JSON -eq 0 ]; then
+        case "$status" in
+            PASS) printf "  ${GREEN}[PASS]${NC} %-42s %s\n" "$name" "$value" ;;
+            WARN) printf "  ${YELLOW}[WARN]${NC} %-42s %s\n" "$name" "$value" ;;
+            FAIL) printf "  ${RED}[FAIL]${NC} %-42s %s\n" "$name" "$value" ;;
+            CRIT) printf "  ${RED}[CRIT]${NC} %-42s %s\n" "$name" "$value" ;;
+        esac
+        if [ -n "$detail" ]; then echo "         $detail"; fi
+    fi
+}
+
+# ------------------------------------------------------------------
+check_sysctl() {
+    local key="$1" expected="$2" name="$3" level="${4:-FAIL}"
+    local actual
+    if [ $MOCK -eq 1 ]; then
+        actual="$expected"
+    else
+        actual=$(sysctl -n "$key" 2>/dev/null || echo "N/A")
+    fi
+    if [ "$actual" = "$expected" ]; then
+        record "$name" "PASS" "$actual"
+    else
+        record "$name" "$level" "got=$actual expected=$expected"
+    fi
+}
+
+# ------------------------------------------------------------------
+run_checks() {
+    [ $JSON -eq 0 ] && echo -e "${CYAN}[*] Zero-Day OS Security Check v${VERSION}${NC}"
+    [ $JSON -eq 0 ] && echo ""
+    [ $JSON -eq 0 ] && echo "  ── Kernel self-protection ──────────────────────────────"
+
+    check_sysctl "kernel.kptr_restrict"          "2"  "kptr_restrict=2"          "WARN"
+    check_sysctl "kernel.dmesg_restrict"         "1"  "dmesg_restrict=1"         "WARN"
+    check_sysctl "kernel.sysrq"                  "0"  "sysrq disabled"           "WARN"
+    check_sysctl "kernel.randomize_va_space"     "2"  "ASLR=2 (full)"            "FAIL"
+    check_sysctl "kernel.unprivileged_bpf_disabled" "1" "unprivileged BPF disabled" "WARN"
+    check_sysctl "net.core.bpf_jit_harden"      "2"  "BPF JIT hardening=2"      "WARN"
+    check_sysctl "kernel.yama.ptrace_scope"      "1"  "ptrace restricted (Yama)" "WARN"
+    check_sysctl "kernel.kexec_load_disabled"    "1"  "kexec disabled"           "WARN"
+    check_sysctl "vm.unprivileged_userfaultfd"   "0"  "userfaultfd restricted"   "WARN"
+    check_sysctl "fs.suid_dumpable"              "0"  "SUID dumps disabled"      "WARN"
+    check_sysctl "kernel.perf_event_paranoid"    "3"  "perf_event restricted"    "WARN"
+
+    [ $JSON -eq 0 ] && echo ""
+    [ $JSON -eq 0 ] && echo "  ── Network hardening ───────────────────────────────────"
+
+    check_sysctl "net.ipv4.tcp_syncookies"                   "1" "SYN cookies"              "FAIL"
+    check_sysctl "net.ipv4.conf.all.accept_source_route"     "0" "no source routing (v4)"   "FAIL"
+    check_sysctl "net.ipv6.conf.all.accept_source_route"     "0" "no source routing (v6)"   "FAIL"
+    check_sysctl "net.ipv4.conf.all.accept_redirects"        "0" "no ICMP redirects (v4)"   "WARN"
+    check_sysctl "net.ipv4.conf.all.send_redirects"          "0" "no outbound redirects"    "WARN"
+    check_sysctl "net.ipv4.conf.all.rp_filter"               "1" "reverse path filter"      "WARN"
+    check_sysctl "net.ipv4.icmp_echo_ignore_broadcasts"      "1" "no ICMP broadcast reply"  "WARN"
+    check_sysctl "net.ipv4.conf.all.log_martians"            "1" "log martians"             "WARN"
+    check_sysctl "net.ipv6.conf.all.accept_ra"               "0" "no IPv6 RA"               "WARN"
+
+    [ $JSON -eq 0 ] && echo ""
+    [ $JSON -eq 0 ] && echo "  ── Filesystem hardening ────────────────────────────────"
+
+    check_sysctl "fs.protected_hardlinks"  "1" "hardlink protection"  "FAIL"
+    check_sysctl "fs.protected_symlinks"   "1" "symlink protection"   "FAIL"
+    check_sysctl "fs.protected_fifos"      "2" "FIFO protection=2"    "WARN"
+    check_sysctl "fs.protected_regular"    "2" "regular file prot=2"  "WARN"
+
+    [ $JSON -eq 0 ] && echo ""
+    [ $JSON -eq 0 ] && echo "  ── Services & attack surface ───────────────────────────"
+
+    # SSH hardening config present
+    if [ $MOCK -eq 1 ] || [ -f "/etc/ssh/sshd_config.d/99-zeroday-hardening.conf" ]; then
+        record "SSH hardening config" "PASS" "present"
+    else
+        record "SSH hardening config" "WARN" "missing /etc/ssh/sshd_config.d/99-zeroday-hardening.conf"
+    fi
+
+    # nftables firewall
+    if [ $MOCK -eq 1 ]; then
+        record "nftables firewall" "PASS" "enabled"
+    elif systemctl is-active nftables >/dev/null 2>&1; then
+        record "nftables firewall" "PASS" "active"
+    elif [ -f /etc/nftables.conf ]; then
+        record "nftables firewall" "WARN" "config present but service not active"
+    else
+        record "nftables firewall" "WARN" "not configured"
+    fi
+
+    # AppArmor
+    if [ $MOCK -eq 1 ]; then
+        record "AppArmor LSM" "PASS" "enforcing"
+    elif command -v aa-status >/dev/null 2>&1; then
+        local aa_status
+        aa_status=$(aa-status 2>/dev/null | grep "apparmor module is loaded" || echo "")
+        if [ -n "$aa_status" ]; then
+            record "AppArmor LSM" "PASS" "loaded"
+        else
+            record "AppArmor LSM" "WARN" "installed but not active"
+        fi
+    else
+        record "AppArmor LSM" "WARN" "not installed (expected in build env)"
+    fi
+
+    # dm-crypt availability
+    if [ $MOCK -eq 1 ] || command -v cryptsetup >/dev/null 2>&1; then
+        record "cryptsetup (dm-crypt)" "PASS" "available"
+    else
+        record "cryptsetup (dm-crypt)" "WARN" "not installed"
+    fi
+
+    # dm-verity availability
+    if [ $MOCK -eq 1 ] || command -v veritysetup >/dev/null 2>&1; then
+        record "veritysetup (dm-verity)" "PASS" "available"
+    else
+        record "veritysetup (dm-verity)" "WARN" "not installed"
+    fi
+
+    # umask
+    if [ $MOCK -eq 1 ]; then
+        record "global umask 027" "PASS" "configured"
+    elif grep -q "umask 027" /etc/profile 2>/dev/null || grep -q "umask 027" /etc/bash.bashrc 2>/dev/null; then
+        record "global umask 027" "PASS" "set in /etc/profile or bash.bashrc"
+    else
+        record "global umask 027" "WARN" "not found in /etc/profile or /etc/bash.bashrc"
+    fi
+
+    # Coredump disable
+    if [ $MOCK -eq 1 ] || [ -f "/etc/security/limits.d/99-zeroday-coredump.conf" ]; then
+        record "coredump disabled" "PASS" "present"
+    else
+        record "coredump disabled" "WARN" "limits.d config missing"
+    fi
+
+    [ $JSON -eq 0 ] && echo ""
+    [ $JSON -eq 0 ] && echo "  ── Zero-Day OS security tools ──────────────────────────"
+
+    # Our scripts
+    for script in zeroday-crypt zeroday-secureboot zeroday-suid-audit; do
+        if [ $MOCK -eq 1 ] || [ -x "/usr/local/bin/$script" ]; then
+            record "$script script" "PASS" "installed"
+        else
+            record "$script script" "WARN" "not installed yet"
+        fi
+    done
+
+    # zeroday-security-check itself (self-check)
+    record "zeroday-security-check" "PASS" "running v${VERSION}"
+}
+
+# ------------------------------------------------------------------
+output_results() {
+    if [ $JSON -eq 1 ]; then
+        local joined
+        printf -v joined '%s,' "${RESULTS[@]}"
+        joined="${joined%,}"
+        cat << JSONOUT
+{
+  "tool": "zeroday-security-check",
+  "version": "${VERSION}",
+  "mock": ${MOCK},
+  "pass": ${PASS_COUNT},
+  "warn": ${WARN_COUNT},
+  "fail": ${FAIL_COUNT},
+  "checks": [${joined}]
+}
+JSONOUT
+    else
+        echo ""
+        echo -e "  ─────────────────────────────────────────────────────"
+        echo -e "  Results: ${GREEN}${PASS_COUNT} passed${NC}  ${YELLOW}${WARN_COUNT} warnings${NC}  ${RED}${FAIL_COUNT} failures${NC}"
+        echo ""
+        if [ $FAIL_COUNT -eq 0 ] && [ $WARN_COUNT -eq 0 ]; then
+            echo -e "  ${GREEN}[+] Perfect score — all security checks passed.${NC}"
+        elif [ $FAIL_COUNT -eq 0 ]; then
+            echo -e "  ${YELLOW}[~] No hard failures; ${WARN_COUNT} warning(s) — review above.${NC}"
+        else
+            echo -e "  ${RED}[!] ${FAIL_COUNT} security failure(s) detected — fix before deployment.${NC}"
+        fi
+        echo ""
+    fi
+}
+
+# ------------------------------------------------------------------
+parse_args "$@"
+run_checks
+output_results
+
+if [ $VERIFY -eq 1 ]; then
+    if [ $FAIL_COUNT -gt 0 ]; then
+        exit 1
+    fi
+    if [ $STRICT -eq 1 ] && [ $WARN_COUNT -gt 0 ]; then
+        exit 1
+    fi
+    exit 0
+fi
+exit 0
