@@ -1,0 +1,407 @@
+#!/bin/bash
+set -euo pipefail
+# /usr/local/bin/zd-power
+# ZERO-DAY OS — Power Optimization Manager for CardPuterZero
+# Profiles: auto | performance | balanced | stealth | ultra
+# Usage: zd-power [status|profile|watch|tune]
+
+SYSFS="/sys"
+CPU_BASE="$SYSFS/devices/system/cpu"
+POWER_SUPPLY="$SYSFS/class/power_supply"
+BACKLIGHT_BASE="$SYSFS/class/backlight"
+LOG="/opt/cardputer/panic.log"
+
+# ── Helpers ────────────────────────────────────────────────────────────────
+
+log() { echo "[zd-power] $*"; echo "$(date '+%Y-%m-%d %H:%M:%S') [zd-power] $*" >> "$LOG" 2>/dev/null || true; }
+
+write_sysfs() {
+    local path="$1" val="$2"
+    if [ -w "$path" ]; then
+        echo "$val" > "$path" 2>/dev/null || true
+    fi
+}
+
+battery_percent() {
+    local cap
+    cap=$(cat "$POWER_SUPPLY"/*/capacity 2>/dev/null | head -1)
+    echo "${cap:-50}"
+}
+
+battery_status() {
+    cat "$POWER_SUPPLY"/*/status 2>/dev/null | head -1 || echo "Unknown"
+}
+
+current_governor() {
+    cat "$CPU_BASE/cpu0/cpufreq/scaling_governor" 2>/dev/null || echo "unknown"
+}
+
+online_cores() {
+    local count=1
+    for f in "$CPU_BASE"/cpu[1-9]/online; do
+        [ -f "$f" ] && [ "$(cat "$f" 2>/dev/null)" = "1" ] && count=$((count + 1))
+    done
+    echo "$count"
+}
+
+set_governor() {
+    local gov="$1"
+    for dir in "$CPU_BASE"/cpu*/cpufreq/scaling_governor; do
+        write_sysfs "$dir" "$gov"
+    done
+    log "CPU governor → $gov"
+}
+
+set_freq_max() {
+    local freq="$1"
+    for dir in "$CPU_BASE"/cpu*/cpufreq/scaling_max_freq; do
+        write_sysfs "$dir" "$freq"
+    done
+    log "CPU max freq → ${freq}Hz"
+}
+
+set_cores() {
+    # $1 = number of cores to enable (1..4)
+    local target="$1"
+    for i in 1 2 3; do
+        local path="$CPU_BASE/cpu${i}/online"
+        [ -f "$path" ] || continue
+        if [ "$i" -lt "$target" ]; then
+            write_sysfs "$path" 1
+        else
+            write_sysfs "$path" 0
+        fi
+    done
+    log "Active cores → $target"
+}
+
+set_backlight() {
+    local level="$1"
+    local dev
+    dev=$(ls "$BACKLIGHT_BASE" 2>/dev/null | head -1)
+    [ -z "$dev" ] && return
+    local max
+    max=$(cat "$BACKLIGHT_BASE/$dev/max_brightness" 2>/dev/null || echo "255")
+    local val=$(( level * max / 255 ))
+    write_sysfs "$BACKLIGHT_BASE/$dev/brightness" "$val"
+    log "Backlight → $level/255 (raw $val/$max)"
+}
+
+usb_autosuspend() {
+    # Enable USB autosuspend globally for all USB devices
+    for dev in /sys/bus/usb/devices/*/power/autosuspend; do
+        write_sysfs "$dev" 2
+    done
+    for dev in /sys/bus/usb/devices/*/power/control; do
+        write_sysfs "$dev" auto
+    done
+    log "USB autosuspend → enabled (2s)"
+}
+
+usb_autosuspend_off() {
+    for dev in /sys/bus/usb/devices/*/power/control; do
+        write_sysfs "$dev" on
+    done
+    log "USB autosuspend → disabled"
+}
+
+mmc_power_save() {
+    # SD/MMC host power saving (runtime PM)
+    for dev in /sys/bus/mmc/devices/*/host/power/control; do
+        write_sysfs "$dev" auto
+    done
+    for dev in /sys/bus/platform/devices/*/power/control; do
+        write_sysfs "$dev" auto
+    done
+    # SD card runtime PM
+    for dev in /sys/bus/mmc/devices/*/power/control; do
+        write_sysfs "$dev" auto
+    done
+    log "MMC/SD runtime PM → auto"
+}
+
+wifi_power_save() {
+    local state="$1"  # on | off
+    if command -v iw >/dev/null 2>&1; then
+        iw dev wlan0 set power_save "$state" 2>/dev/null || true
+        log "WiFi power_save → $state"
+    fi
+}
+
+apply_cpu_idle() {
+    # Enable CPU idle (cpuidle) for deeper C-states
+    write_sysfs "$SYSFS/module/cpuidle/parameters/off" 0
+    # Disable energy_performance_preference if available
+    for f in "$CPU_BASE"/cpu*/cpufreq/energy_performance_preference; do
+        write_sysfs "$f" "power"
+    done
+    log "CPU idle states → enabled"
+}
+
+# ── Profiles ───────────────────────────────────────────────────────────────
+
+profile_ultra() {
+    # Absolute minimum power: single core at 300MHz, no radios, screen dim
+    log "Applying ULTRA POWER SAVE profile"
+    set_governor "powersave"
+    set_freq_max "300000"
+    set_cores 1
+    rfkill block all 2>/dev/null || true
+    set_backlight 40
+    usb_autosuspend
+    mmc_power_save
+    apply_cpu_idle
+    # Disable HDMI
+    tvservice --off 2>/dev/null || true
+    echo "[+] ULTRA: 300MHz single-core, no radios, dim screen, USB/MMC autosuspend"
+    echo "[+] Estimated battery life: ~14h"
+}
+
+profile_stealth() {
+    log "Applying STEALTH profile"
+    set_governor "powersave"
+    set_freq_max "600000"
+    set_cores 1
+    rfkill block all 2>/dev/null || true
+    set_backlight 80
+    usb_autosuspend
+    mmc_power_save
+    apply_cpu_idle
+    wifi_power_save off
+    echo "[+] STEALTH: 600MHz single-core, no radios, dim screen, USB autosuspend"
+    echo "[+] Estimated battery life: ~10h"
+}
+
+profile_balanced() {
+    log "Applying BALANCED profile"
+    set_governor "ondemand"
+    set_freq_max "800000"
+    set_cores 2
+    rfkill unblock wifi 2>/dev/null || true
+    rfkill block bluetooth 2>/dev/null || true
+    set_backlight 160
+    usb_autosuspend
+    mmc_power_save
+    apply_cpu_idle
+    wifi_power_save on
+    echo "[+] BALANCED: 800MHz dual-core, WiFi on (power save), BT off, medium brightness"
+    echo "[+] Estimated battery life: ~6h"
+}
+
+profile_performance() {
+    log "Applying PERFORMANCE profile"
+    set_governor "performance"
+    set_freq_max "1000000"
+    set_cores 4
+    rfkill unblock all 2>/dev/null || true
+    set_backlight 255
+    usb_autosuspend_off
+    wifi_power_save off
+    echo "[+] PERFORMANCE: 1GHz quad-core, all radios, full brightness"
+    echo "[+] Estimated battery life: ~4h"
+}
+
+profile_auto() {
+    local pct status
+    pct=$(battery_percent)
+    status=$(battery_status)
+    log "Auto profile select — battery ${pct}% status=${status}"
+
+    if [ "$status" = "Charging" ]; then
+        profile_balanced
+        echo "[*] Charging detected — balanced profile"
+    elif [ "$pct" -ge 60 ]; then
+        profile_balanced
+        echo "[*] Battery ${pct}% — balanced profile"
+    elif [ "$pct" -ge 30 ]; then
+        profile_stealth
+        echo "[*] Battery ${pct}% — stealth profile (below 60%)"
+    else
+        profile_ultra
+        echo "[*] Battery ${pct}% — ultra power save (below 30%)"
+    fi
+}
+
+# ── Battery Watch Daemon ───────────────────────────────────────────────────
+
+cmd_watch() {
+    # Run as a daemon: re-evaluate profile every 60s
+    log "Battery watch daemon starting (interval: 60s)"
+    local last_profile=""
+    while true; do
+        local pct status new_profile
+        pct=$(battery_percent)
+        status=$(battery_status)
+
+        if [ "$status" = "Charging" ]; then
+            new_profile="balanced"
+        elif [ "$pct" -ge 60 ]; then
+            new_profile="balanced"
+        elif [ "$pct" -ge 30 ]; then
+            new_profile="stealth"
+        else
+            new_profile="ultra"
+        fi
+
+        if [ "$new_profile" != "$last_profile" ]; then
+            log "Auto-switching profile: ${last_profile:-none} → $new_profile (battery ${pct}%, $status)"
+            "profile_${new_profile}"
+            last_profile="$new_profile"
+        fi
+
+        sleep 60
+    done
+}
+
+# ── Boot-time Tune ────────────────────────────────────────────────────────
+
+cmd_tune() {
+    # Apply all kernel-level power knobs at boot (called by zeroday-power.service)
+    log "Applying boot-time power tuning"
+
+    # Writeback cache: reduce dirty ratio to write back sooner (reduce SD wear + save power)
+    write_sysfs /proc/sys/vm/dirty_ratio 5
+    write_sysfs /proc/sys/vm/dirty_background_ratio 2
+    write_sysfs /proc/sys/vm/dirty_expire_centisecs 500
+    log "VM dirty ratios → 5%/2%"
+
+    # Swappiness: prefer RAM over swap (swap = SD I/O = power drain)
+    write_sysfs /proc/sys/vm/swappiness 10
+    log "Swappiness → 10"
+
+    # Enable USB autosuspend globally
+    usb_autosuspend
+
+    # Enable SD/MMC runtime power management
+    mmc_power_save
+
+    # Enable CPU idle states
+    apply_cpu_idle
+
+    # Disable I2C bus power if no device is active
+    # (skip — ZD uses I2C for keypad, fuel gauge, IMU; keep it active)
+
+    # Scheduler: use deadline I/O for SD card (lower latency = shorter active time)
+    for dev in /sys/block/mmcblk*/queue/scheduler; do
+        write_sysfs "$dev" deadline 2>/dev/null || write_sysfs "$dev" mq-deadline 2>/dev/null || true
+    done
+    log "Block I/O scheduler → deadline (mmcblk)"
+
+    # Read-ahead: reduce read-ahead on SD (unnecessary prefetch burns power)
+    for dev in /sys/block/mmcblk*/queue/read_ahead_kb; do
+        write_sysfs "$dev" 128
+    done
+    log "Read-ahead → 128KB (mmcblk)"
+
+    echo "[+] Boot-time power tuning complete"
+}
+
+# ── Status ────────────────────────────────────────────────────────────────
+
+cmd_status() {
+    local gov cores pct status voltage current
+    gov=$(current_governor)
+    cores=$(online_cores)
+    pct=$(battery_percent)
+    status=$(battery_status)
+    voltage=$(cat "$POWER_SUPPLY"/*/voltage_now 2>/dev/null | head -1 || echo "?")
+    current=$(cat "$POWER_SUPPLY"/*/current_now 2>/dev/null | head -1 || echo "?")
+
+    local backlight_dev backlight_val backlight_max
+    backlight_dev=$(ls "$BACKLIGHT_BASE" 2>/dev/null | head -1)
+    if [ -n "$backlight_dev" ]; then
+        backlight_val=$(cat "$BACKLIGHT_BASE/$backlight_dev/brightness" 2>/dev/null || echo "?")
+        backlight_max=$(cat "$BACKLIGHT_BASE/$backlight_dev/max_brightness" 2>/dev/null || echo "?")
+    else
+        backlight_val="?" ; backlight_max="?"
+    fi
+
+    local wifi_block bt_block
+    wifi_block=$(rfkill list wifi 2>/dev/null | grep -c "Soft blocked: yes" || echo "0")
+    bt_block=$(rfkill list bluetooth 2>/dev/null | grep -c "Soft blocked: yes" || echo "0")
+
+    local max_freq
+    max_freq=$(cat "$CPU_BASE/cpu0/cpufreq/scaling_max_freq" 2>/dev/null || echo "?")
+    local cur_freq
+    cur_freq=$(cat "$CPU_BASE/cpu0/cpufreq/scaling_cur_freq" 2>/dev/null || echo "?")
+
+    echo ""
+    echo "  ZERO-DAY OS — Power Status"
+    echo "  ─────────────────────────"
+    printf "  Battery:    %s%% (%s)\n" "$pct" "$status"
+    [ "$voltage" != "?" ] && printf "  Voltage:    %.3fV\n" "$(echo "scale=3; $voltage/1000000" | bc 2>/dev/null || echo "$voltage")"
+    [ "$current" != "?" ] && printf "  Current:    %.0fmA\n" "$(echo "scale=0; $current/1000" | bc 2>/dev/null || echo "$current")"
+    echo ""
+    printf "  Governor:   %s\n" "$gov"
+    printf "  Max freq:   %dMHz\n" "$(( ${max_freq:-0} / 1000 ))"
+    printf "  Cur freq:   %dMHz\n" "$(( ${cur_freq:-0} / 1000 ))"
+    printf "  Cores:      %s online\n" "$cores"
+    echo ""
+    printf "  WiFi:       %s\n" "$([ "$wifi_block" -gt 0 ] && echo "BLOCKED" || echo "UP")"
+    printf "  Bluetooth:  %s\n" "$([ "$bt_block" -gt 0 ] && echo "BLOCKED" || echo "UP")"
+    printf "  Backlight:  %s/%s\n" "$backlight_val" "$backlight_max"
+    echo ""
+
+    # USB autosuspend summary
+    local usb_auto=0 usb_total=0
+    for f in /sys/bus/usb/devices/*/power/control; do
+        [ -f "$f" ] || continue
+        usb_total=$((usb_total + 1))
+        [ "$(cat "$f" 2>/dev/null)" = "auto" ] && usb_auto=$((usb_auto + 1))
+    done
+    printf "  USB autosuspend: %d/%d devices\n" "$usb_auto" "$usb_total"
+
+    # I/O scheduler
+    local sched
+    sched=$(cat /sys/block/mmcblk0/queue/scheduler 2>/dev/null | grep -oP '\[\K[^\]]+' || echo "?")
+    printf "  I/O scheduler:   %s (mmcblk0)\n" "$sched"
+
+    echo ""
+}
+
+# ── Entry Point ───────────────────────────────────────────────────────────
+
+CMD="${1:-status}"
+SUBCMD="${2:-auto}"
+
+case "$CMD" in
+    status)
+        cmd_status
+        ;;
+    profile)
+        if [ "$(id -u)" -ne 0 ]; then echo "[!] Root required."; exit 1; fi
+        case "$SUBCMD" in
+            auto)        profile_auto ;;
+            performance) profile_performance ;;
+            balanced)    profile_balanced ;;
+            stealth)     profile_stealth ;;
+            ultra)       profile_ultra ;;
+            *)
+                echo "[!] Unknown profile: $SUBCMD"
+                echo "    Available: auto | performance | balanced | stealth | ultra"
+                exit 1
+                ;;
+        esac
+        ;;
+    tune)
+        if [ "$(id -u)" -ne 0 ]; then echo "[!] Root required."; exit 1; fi
+        cmd_tune
+        ;;
+    watch)
+        if [ "$(id -u)" -ne 0 ]; then echo "[!] Root required."; exit 1; fi
+        cmd_watch
+        ;;
+    *)
+        echo "Usage: zd-power [status|profile <mode>|tune|watch]"
+        echo ""
+        echo "  status              Show current power state"
+        echo "  profile auto        Auto-select profile based on battery level"
+        echo "  profile performance 1GHz quad-core, all radios on"
+        echo "  profile balanced    800MHz dual-core, WiFi on"
+        echo "  profile stealth     600MHz single-core, no radios"
+        echo "  profile ultra       300MHz single-core, no radios, dim screen"
+        echo "  tune                Apply boot-time kernel power knobs"
+        echo "  watch               Battery-aware auto-switch daemon"
+        exit 1
+        ;;
+esac

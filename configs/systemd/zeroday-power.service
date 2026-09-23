@@ -1,0 +1,19 @@
+[Unit]
+Description=ZERO-DAY OS — Power Optimization (CardPuterZero)
+Documentation=https://github.com/jayis1/Zero-Day-OS-
+After=local-fs.target sysinit.target
+Before=zeroday-boot.service network.target
+DefaultDependencies=no
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# Apply boot-time kernel power knobs first
+ExecStart=/usr/local/bin/zd-power tune
+# Then apply auto profile based on current battery level
+ExecStart=/usr/local/bin/zd-power profile auto
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

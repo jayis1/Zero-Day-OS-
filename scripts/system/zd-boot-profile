@@ -1,0 +1,155 @@
+#!/bin/bash
+set -euo pipefail
+# /usr/local/bin/zd-boot-profile
+# ZERO-DAY OS — Boot Time Profiler for CardPuterZero
+# Analyzes boot phases, identifies slow services, suggests optimizations
+# Usage: zd-boot-profile [--verbose] [--blame=N]
+
+VERBOSE=0
+BLAME=10
+LOG="/opt/cardputer/panic.log"
+
+for arg in "$@"; do
+    case "$arg" in
+        --verbose) VERBOSE=1 ;;
+        --blame=*) BLAME="${arg#--blame=}" ;;
+    esac
+done
+
+echo ""
+echo "  ZERO-DAY OS — Boot Profile (CardPuterZero)"
+echo "  ──────────────────────────────────────────"
+
+# ── systemd-analyze summary ────────────────────────────────────────────────
+
+if command -v systemd-analyze >/dev/null 2>&1; then
+    echo ""
+    echo "  Boot Time Summary:"
+    systemd-analyze 2>/dev/null | sed 's/^/  /' || echo "  (systemd-analyze unavailable)"
+
+    echo ""
+    echo "  Top ${BLAME} slowest units:"
+    systemd-analyze blame 2>/dev/null | head -"$BLAME" | sed 's/^/    /' || echo "  (blame unavailable)"
+
+    if [ "$VERBOSE" = "1" ]; then
+        echo ""
+        echo "  Critical chain:"
+        systemd-analyze critical-chain 2>/dev/null | head -30 | sed 's/^/  /' || true
+    fi
+else
+    echo "  [!] systemd-analyze not available"
+fi
+
+# ── Boot phase timestamps from journal ────────────────────────────────────
+
+echo ""
+echo "  Boot Phase Timestamps:"
+
+# Firmware start (if available)
+FIRMWARE_TIME=$(journalctl --list-boots 2>/dev/null | tail -1 | awk '{print $2, $3}' || echo "")
+if [ -n "$FIRMWARE_TIME" ]; then
+    echo "    Firmware start: $FIRMWARE_TIME"
+fi
+
+# Key service timestamps
+for svc in zeroday-boot.service zeroday-power.service networking.service \
+           systemd-networkd.service NetworkManager.service wpa_supplicant.service \
+           zeroday-drivers.service; do
+    local_time=$(systemctl show "$svc" --property=ActiveEnterTimestampMonotonic 2>/dev/null \
+        | cut -d= -f2 || echo "")
+    if [ -n "$local_time" ] && [ "$local_time" != "0" ]; then
+        ms=$(( local_time / 1000 ))
+        printf "    %-40s %dms\n" "${svc}:" "$ms"
+    fi
+done
+
+# ── Power state at boot completion ────────────────────────────────────────
+
+echo ""
+echo "  Power State at Boot:"
+
+GOV=$(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null || echo "unknown")
+MAX_FREQ=$(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_max_freq 2>/dev/null || echo "0")
+CUR_FREQ=$(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq 2>/dev/null || echo "0")
+CORES=1
+for f in /sys/devices/system/cpu/cpu[1-9]/online; do
+    [ -f "$f" ] && [ "$(cat "$f" 2>/dev/null)" = "1" ] && CORES=$((CORES + 1))
+done
+
+printf "    CPU governor:   %s\n" "$GOV"
+printf "    Max frequency:  %dMHz\n" "$(( MAX_FREQ / 1000 ))"
+printf "    Current freq:   %dMHz\n" "$(( CUR_FREQ / 1000 ))"
+printf "    Active cores:   %d\n" "$CORES"
+
+BATT=$(cat /sys/class/power_supply/*/capacity 2>/dev/null | head -1 || echo "?")
+BATT_STATUS=$(cat /sys/class/power_supply/*/status 2>/dev/null | head -1 || echo "?")
+printf "    Battery:        %s%% (%s)\n" "$BATT" "$BATT_STATUS"
+
+# ── Services consuming significant RAM ────────────────────────────────────
+
+if [ "$VERBOSE" = "1" ]; then
+    echo ""
+    echo "  Top 10 services by memory (RSS):"
+    systemctl list-units --type=service --state=running --no-pager 2>/dev/null \
+        | awk '{print $1}' | grep '\.service$' | while read -r svc; do
+        rss=$(systemctl show "$svc" --property=MemoryCurrent 2>/dev/null | cut -d= -f2)
+        [ -z "$rss" ] || [ "$rss" = "[not set]" ] || [ "$rss" = "18446744073709551615" ] && continue
+        echo "$rss $svc"
+    done | sort -rn | head -10 | while read -r rss svc; do
+        printf "    %-42s %dKB\n" "$svc" "$(( rss / 1024 ))"
+    done 2>/dev/null || true
+fi
+
+# ── Optimisation recommendations ──────────────────────────────────────────
+
+echo ""
+echo "  Recommendations:"
+
+# Check governor
+if [ "$GOV" = "performance" ]; then
+    echo "    [!] CPU governor is 'performance' — switch to 'ondemand' or 'powersave' to save battery"
+    echo "        Run: zd-power profile balanced"
+fi
+
+# Check USB autosuspend
+USB_ON_COUNT=$(grep -rc "^on$" /sys/bus/usb/devices/*/power/control 2>/dev/null | grep -c ":1" || echo "0")
+if [ "$USB_ON_COUNT" -gt "0" ]; then
+    echo "    [!] $USB_ON_COUNT USB device(s) have autosuspend disabled"
+    echo "        Run: zd-power tune"
+fi
+
+# Check if SD scheduler is optimal
+SCHED=$(cat /sys/block/mmcblk0/queue/scheduler 2>/dev/null | grep -oP '\[\K[^\]]+' || echo "none")
+if [ "$SCHED" != "deadline" ] && [ "$SCHED" != "mq-deadline" ]; then
+    echo "    [!] SD card I/O scheduler is '$SCHED' — 'deadline' reduces latency and power"
+    echo "        Run: zd-power tune"
+fi
+
+# Check swappiness
+SWAP=$(cat /proc/sys/vm/swappiness 2>/dev/null || echo "60")
+if [ "$SWAP" -gt "20" ]; then
+    echo "    [!] Swappiness is $SWAP — high values cause SD I/O (power drain)"
+    echo "        Run: zd-power tune"
+fi
+
+# Check radios
+WIFI_BLOCK=$(rfkill list wifi 2>/dev/null | grep -c "Soft blocked: yes" || echo "0")
+if [ "$WIFI_BLOCK" = "0" ] && [ "$GOV" != "performance" ]; then
+    echo "    [i] WiFi is active — consider 'stealth' profile when not needed"
+fi
+
+# Check max freq vs governor
+if [ "$GOV" = "powersave" ] && [ "$MAX_FREQ" -gt "800000" ]; then
+    echo "    [i] powersave governor with high max_freq — max_freq is capped by powersave anyway"
+fi
+
+echo ""
+echo "  Profile quick reference:"
+echo "    zd-power profile auto          Auto (battery level adaptive)"
+echo "    zd-power profile balanced      6h — 800MHz dual-core, WiFi on"
+echo "    zd-power profile stealth       10h — 600MHz single-core, no radios"
+echo "    zd-power profile ultra         14h — 300MHz single-core, minimal"
+echo ""
+
+# Log profile run
+echo "$(date '+%Y-%m-%d %H:%M:%S') [zd-boot-profile] profiled" >> "$LOG" 2>/dev/null || true
